@@ -140,7 +140,9 @@ class KPICalculator:
             sampled_students = unique_students
         
         clash_count = 0
-        events_lookup = events.set_index('Event ID')[['Day', 'Start Hour', 'End Hour']].to_dict('index')
+        # Drop duplicate Event IDs, keeping first occurrence
+        events_dedup = events.drop_duplicates(subset='Event ID')
+        events_lookup = events_dedup.set_index('Event ID')[['Day', 'Start Hour', 'End Hour']].to_dict('index')
         
         for student_id in sampled_students:
             student_event_ids = student_events[
@@ -183,7 +185,9 @@ class KPICalculator:
         lunch_breaks = 0
         daily_spans = []
         
-        events_lookup = events.set_index('Event ID')[['Day', 'Start Hour', 'End Hour']].to_dict('index')
+        # Drop duplicate Event IDs, keeping first occurrence
+        events_dedup = events.drop_duplicates(subset='Event ID')
+        events_lookup = events_dedup.set_index('Event ID')[['Day', 'Start Hour', 'End Hour']].to_dict('index')
         
         for student_id in sampled_students:
             student_event_ids = student_events[
