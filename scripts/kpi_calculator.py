@@ -224,60 +224,91 @@ class KPICalculator:
         unique_rooms_used = physical_events['Room'].nunique()
         total_rooms = len(rooms_df)
         
-        # Calculate total available room-slots (room × timeslot combinations)
+        # Calculate total available room-slots per week (room × timeslot combinations)
         hours_per_week = sum(len(hours) for hours in scenario_hours.values())
-        total_room_slots = total_rooms * hours_per_week
+        total_room_slots_per_week = total_rooms * hours_per_week
         
-        # Calculate used room-hours (only for physical events)
-        used_room_hours = 0
-        room_slot_usage = defaultdict(set)  # room -> set of (day, hour) occupied
+        # Parse weeks and calculate room-week-slot usage
+        # Key: (week, room, day, hour) - each unique combination should only count once
+        week_room_slots = defaultdict(set)  # week -> set of (room, day, hour)
         
         for _, event in physical_events.iterrows():
             day = event.get('Day')
             start_hour = event.get('Start Hour')
             duration = event.get('Duration (minutes)', 50)
             room = event.get('Room')
+            weeks_str = event.get('Weeks', '')
             
             if pd.notna(day) and pd.notna(start_hour) and pd.notna(room):
                 if day in scenario_hours:
-                    # Track occupied slots
-                    event_hours = duration / 60
-                    used_room_hours += event_hours
+                    # Parse weeks
+                    if pd.notna(weeks_str) and weeks_str:
+                        weeks = [w.strip() for w in str(weeks_str).split(',')]
+                    else:
+                        weeks = ['1']  # Default to 1 week if not specified
                     
-                    # Mark each hour slot as occupied
-                    for h in range(int(start_hour), min(int(start_hour + event_hours) + 1, 18)):
-                        room_slot_usage[room].add((day, h))
+                    # Mark each week-room-day-hour slot as occupied
+                    event_hours = duration / 60
+                    for week in weeks:
+                        for h in range(int(start_hour), min(int(start_hour + event_hours) + 1, 18)):
+                            if h in scenario_hours.get(day, []):
+                                week_room_slots[week].add((room, day, h))
         
-        # Calculate actual slot-based utilization
-        total_occupied_slots = sum(len(slots) for slots in room_slot_usage.values())
+        # Calculate average slots occupied per week
+        if week_room_slots:
+            slots_per_week = [len(slots) for slots in week_room_slots.values()]
+            avg_slots_per_week = sum(slots_per_week) / len(slots_per_week)
+        else:
+            avg_slots_per_week = 0
         
-        # Find bottlenecks (rooms at >=70% utilization)
+        avg_utilization = (avg_slots_per_week / total_room_slots_per_week * 100) if total_room_slots_per_week > 0 else 0
+        
+        # Find bottleneck rooms (used in >70% of available slots across weeks)
+        room_usage_count = defaultdict(int)
+        total_weeks = len(week_room_slots) if week_room_slots else 1
+        for week, slots in week_room_slots.items():
+            for room, day, hour in slots:
+                room_usage_count[room] += 1
+        
         bottlenecks = []
-        for room, slots in room_slot_usage.items():
-            room_util = len(slots) / hours_per_week if hours_per_week > 0 else 0
+        for room, count in room_usage_count.items():
+            room_util = count / (hours_per_week * total_weeks) if hours_per_week > 0 else 0
             if room_util >= 0.70:
                 bottlenecks.append(room)
         
-        avg_utilization = (total_occupied_slots / total_room_slots * 100) if total_room_slots > 0 else 0
-        
-        # Calculate peak hourly utilization (rooms in use during busiest hour)
-        hourly_room_count = defaultdict(int)
+        # Calculate peak hourly utilization (unique rooms in use during busiest hour of any week)
+        hourly_rooms_by_week = defaultdict(lambda: defaultdict(set))  # week -> (day_hour) -> set of rooms
         for _, event in physical_events.iterrows():
             day = event.get('Day')
             start_hour = event.get('Start Hour')
-            if pd.notna(day) and pd.notna(start_hour):
-                key = f"{day}_{int(start_hour)}"
-                hourly_room_count[key] += 1
+            room = event.get('Room')
+            weeks_str = event.get('Weeks', '')
+            
+            if pd.notna(day) and pd.notna(start_hour) and pd.notna(room):
+                if pd.notna(weeks_str) and weeks_str:
+                    weeks = [w.strip() for w in str(weeks_str).split(',')]
+                else:
+                    weeks = ['1']
+                
+                for week in weeks:
+                    key = f"{day}_{int(start_hour)}"
+                    hourly_rooms_by_week[week][key].add(room)
         
-        peak_usage = max(hourly_room_count.values()) if hourly_room_count else 0
+        # Find the maximum rooms used in any single hour across all weeks
+        peak_usage = 0
+        for week, hourly_rooms in hourly_rooms_by_week.items():
+            for hour_key, rooms in hourly_rooms.items():
+                if len(rooms) > peak_usage:
+                    peak_usage = len(rooms)
+        
         peak_utilization = (peak_usage / total_rooms * 100) if total_rooms > 0 else 0
         
         return EfficiencyKPIs(
             avg_room_utilization=round(avg_utilization, 1),
             peak_utilization=round(peak_utilization, 1),
             bottleneck_room_types=bottlenecks,
-            total_room_hours_available=int(total_room_slots),
-            total_room_hours_used=int(used_room_hours)
+            total_room_hours_available=int(total_room_slots_per_week),
+            total_room_hours_used=int(avg_slots_per_week)
         )
     
     def calculate_all_kpis(self) -> Dict:
