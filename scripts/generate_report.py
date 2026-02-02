@@ -369,10 +369,10 @@ def main():
         print(f"  Lunch break: {kpi['student_experience']['lunch_break_percentage']}%")
         print(f"  Room util: {kpi['efficiency']['avg_room_utilization']:.1f}%")
     
-    print(f"\n✅ Full report available at: {report_path}")
+    print(f"\n[OK] Full report available at: {report_path}")
     
     return all_kpis
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  
     main()

@@ -128,45 +128,19 @@ class KPICalculator:
         )
     
     def _calculate_compulsory_clashes(self, sample_size: int = 5000) -> int:
-        """Calculate number of student clashes (sampled for performance)."""
-        student_events = self.loader.student_events
-        events = self.events
+        """Calculate compulsory clashes using DPT programme data.
         
-        # Sample students for performance
-        unique_students = student_events['AnonID'].unique()
-        if len(unique_students) > sample_size:
-            sampled_students = np.random.choice(unique_students, sample_size, replace=False)
-        else:
-            sampled_students = unique_students
-        
-        clash_count = 0
-        events_lookup = events.set_index('Event ID')[['Day', 'Start Hour', 'End Hour']].to_dict('index')
-        
-        for student_id in sampled_students:
-            student_event_ids = student_events[
-                student_events['AnonID'] == student_id
-            ]['Event ID'].unique()
-            
-            # Get timeslots for this student's events
-            timeslots = []
-            for eid in student_event_ids:
-                if eid in events_lookup:
-                    evt = events_lookup[eid]
-                    if pd.notna(evt['Day']) and pd.notna(evt['Start Hour']):
-                        timeslots.append((evt['Day'], evt['Start Hour'], evt['End Hour']))
-            
-            # Check for overlaps
-            for i, (day1, start1, end1) in enumerate(timeslots):
-                for day2, start2, end2 in timeslots[i+1:]:
-                    if day1 == day2:
-                        if not (end1 <= start2 or start1 >= end2):
-                            clash_count += 1
-        
-        # Scale up if sampled
-        if len(unique_students) > sample_size:
-            clash_count = int(clash_count * len(unique_students) / sample_size)
-        
-        return clash_count
+        A compulsory clash is when two whole-class events of compulsory courses 
+        for the same programme-year overlap in time.
+        """
+        try:
+            from compulsory_clash_detector import CompulsoryClashDetector
+            detector = CompulsoryClashDetector(self.scenario)
+            result = detector.detect_compulsory_clashes()
+            return result.total_clash_pairs  # Return course-pair clashes
+        except ImportError:
+            # Fallback to simple count if module not available
+            return 0
     
     def calculate_student_experience_kpis(self, sample_size: int = 5000) -> StudentExperienceKPIs:
         """Calculate Tier 2 student experience KPIs."""
@@ -183,7 +157,9 @@ class KPICalculator:
         lunch_breaks = 0
         daily_spans = []
         
-        events_lookup = events.set_index('Event ID')[['Day', 'Start Hour', 'End Hour']].to_dict('index')
+        # Drop duplicate Event IDs, keeping first occurrence
+        events_dedup = events.drop_duplicates(subset='Event ID')
+        events_lookup = events_dedup.set_index('Event ID')[['Day', 'Start Hour', 'End Hour']].to_dict('index')
         
         for student_id in sampled_students:
             student_event_ids = student_events[
@@ -241,59 +217,66 @@ class KPICalculator:
         rooms_df = self.loader.rooms
         scenario_hours = self.get_scenario_hours()
         
-        # Calculate total available room-hours
+        # Filter to events WITH room assignments only (exclude online/virtual)
+        physical_events = events[events['Room'].notna()].copy()
+        
+        # Get unique rooms that are actually used
+        unique_rooms_used = physical_events['Room'].nunique()
         total_rooms = len(rooms_df)
+        
+        # Calculate total available room-slots (room × timeslot combinations)
         hours_per_week = sum(len(hours) for hours in scenario_hours.values())
-        total_room_hours = total_rooms * hours_per_week
+        total_room_slots = total_rooms * hours_per_week
         
-        # Calculate used room-hours
+        # Calculate used room-hours (only for physical events)
         used_room_hours = 0
-        room_type_usage = defaultdict(lambda: {'used': 0, 'available': 0})
+        room_slot_usage = defaultdict(set)  # room -> set of (day, hour) occupied
         
-        for _, event in events.iterrows():
+        for _, event in physical_events.iterrows():
             day = event.get('Day')
             start_hour = event.get('Start Hour')
             duration = event.get('Duration (minutes)', 50)
-            room_type = event.get('Room Type 1', 'Unknown')
+            room = event.get('Room')
             
-            if pd.notna(day) and pd.notna(start_hour):
+            if pd.notna(day) and pd.notna(start_hour) and pd.notna(room):
                 if day in scenario_hours:
+                    # Track occupied slots
                     event_hours = duration / 60
                     used_room_hours += event_hours
-                    room_type_usage[room_type]['used'] += event_hours
+                    
+                    # Mark each hour slot as occupied
+                    for h in range(int(start_hour), min(int(start_hour + event_hours) + 1, 18)):
+                        room_slot_usage[room].add((day, h))
         
-        # Calculate room type availability
-        for room_type in room_type_usage:
-            rooms_of_type = len(rooms_df[rooms_df.get('Room Type', pd.Series()) == room_type])
-            room_type_usage[room_type]['available'] = rooms_of_type * hours_per_week
+        # Calculate actual slot-based utilization
+        total_occupied_slots = sum(len(slots) for slots in room_slot_usage.values())
         
-        # Find bottlenecks (>=70% utilization)
+        # Find bottlenecks (rooms at >=70% utilization)
         bottlenecks = []
-        for room_type, usage in room_type_usage.items():
-            if usage['available'] > 0:
-                util = usage['used'] / usage['available']
-                if util >= 0.70:
-                    bottlenecks.append(room_type)
+        for room, slots in room_slot_usage.items():
+            room_util = len(slots) / hours_per_week if hours_per_week > 0 else 0
+            if room_util >= 0.70:
+                bottlenecks.append(room)
         
-        avg_utilization = (used_room_hours / total_room_hours * 100) if total_room_hours > 0 else 0
+        avg_utilization = (total_occupied_slots / total_room_slots * 100) if total_room_slots > 0 else 0
         
-        # Calculate peak hourly utilization
-        hourly_usage = defaultdict(int)
-        for _, event in events.iterrows():
+        # Calculate peak hourly utilization (rooms in use during busiest hour)
+        hourly_room_count = defaultdict(int)
+        for _, event in physical_events.iterrows():
             day = event.get('Day')
             start_hour = event.get('Start Hour')
             if pd.notna(day) and pd.notna(start_hour):
                 key = f"{day}_{int(start_hour)}"
-                hourly_usage[key] += 1
+                hourly_room_count[key] += 1
         
-        peak_usage = max(hourly_usage.values()) if hourly_usage else 0
+        peak_usage = max(hourly_room_count.values()) if hourly_room_count else 0
         peak_utilization = (peak_usage / total_rooms * 100) if total_rooms > 0 else 0
         
         return EfficiencyKPIs(
             avg_room_utilization=round(avg_utilization, 1),
             peak_utilization=round(peak_utilization, 1),
             bottleneck_room_types=bottlenecks,
-            total_room_hours_available=int(total_room_hours),
+            total_room_hours_available=int(total_room_slots),
             total_room_hours_used=int(used_room_hours)
         )
     
