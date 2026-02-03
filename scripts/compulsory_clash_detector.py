@@ -53,26 +53,78 @@ class CompulsoryClashDetector:
         return parts[0] if parts else None
     
     def get_compulsory_courses_by_programme(self) -> Dict[str, Set[str]]:
-        """Get compulsory courses for each programme-year combination."""
+        """Get compulsory courses for each programme-year combination.
+        
+        CRITICAL: Filters out courses that have NO actual student enrollments 
+        for that programme-year, even if listed as compulsory in DPT.
+        """
         if self._compulsory_by_programme is not None:
             return self._compulsory_by_programme
         
+        # 1. Get theoretical compulsory courses from DPT
         dpt = self.dpt_data
-        
-        # Filter to compulsory only
         compulsory = dpt[dpt['Compulsory/Optional'] == 'Compulsory']
         
-        # Group by programme-year
-        self._compulsory_by_programme = {}
+        theoretical_map = defaultdict(set)
         for _, row in compulsory.iterrows():
             prog_code = row['Programme Code']
+            # Handle different column names for Year
             prog_year = row.get('Programme Year', row.get('ProgYear', ''))
+            
+            # Construct key matching student data format: CODE_YEAR
             key = f"{prog_code}_{prog_year}"
+            course = row['Course Code']
+            theoretical_map[key].add(course)
             
-            if key not in self._compulsory_by_programme:
-                self._compulsory_by_programme[key] = set()
+        # 2. Get actual enrollments from Student Data
+        student_events = self.loader.student_events
+        
+        # Check if we have the right columns
+        if 'Programme Code-Year' not in student_events.columns or 'Course ID' not in student_events.columns:
+            print("Warning: Missing columns in student data. Using DPT only.")
+            self._compulsory_by_programme = dict(theoretical_map)
+            return self._compulsory_by_programme
             
-            self._compulsory_by_programme[key].add(row['Course Code'])
+        # Get set of (Programme_Year, Course) that actually exist
+        # We use a set lookup for O(1) access
+        valid_pairs = set()
+        
+        # Group by Programme-Year to avoid massive unique check on whole DF
+        # This is more efficient: get unique courses per programme-year
+        existing_enrollments = student_events[['Programme Code-Year', 'Course ID']].drop_duplicates()
+        
+        for _, row in existing_enrollments.iterrows():
+            p_key = str(row['Programme Code-Year']).strip()
+            # Course ID might be full module code, extract base if needed, 
+            # but DPT usually has base. Let's assume Course ID in student data matches DPT Course Code 
+            # or starts with it. DPT: CMSE11509. Student: CMSE11509...
+            c_id = str(row['Course ID'])
+            valid_pairs.add((p_key, c_id))
+            
+        # 3. Intersect
+        self._compulsory_by_programme = {}
+        
+        for key, courses in theoretical_map.items():
+            active_courses = set()
+            for course in courses:
+                # Check if this course (or a variant of it) exists in valid_pairs for this key
+                # We check stricter first: exact match
+                if (key, course) in valid_pairs:
+                    active_courses.add(course)
+                else:
+                    # Loose check: verify if any course in valid_pairs for this key starts with the DPT course code
+                    # (Optimized: we could pre-filter valid_pairs by key, but let's do a generator check here)
+                    # This is O(N_enrolled_in_prog)
+                    has_enrollment = any(
+                        vp_course.startswith(course) 
+                        for vp_key, vp_course in valid_pairs 
+                        if vp_key == key
+                    )
+                    if has_enrollment:
+                        active_courses.add(course)
+                        
+            if active_courses:
+                self._compulsory_by_programme[key] = active_courses
         
         return self._compulsory_by_programme
     
