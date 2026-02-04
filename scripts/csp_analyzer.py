@@ -13,7 +13,8 @@ from collections import defaultdict
 import random
 import math
 
-from data_loader import TimetableDataLoader
+from data_loader import TimetableDataLoader, DATA_RAW
+import re
 
 
 @dataclass
@@ -42,6 +43,9 @@ class Event:
     event_size: int
     event_type: str
     is_whole_class: bool
+    online: bool = False
+    campus: str = 'Unknown'
+    weeks: Set[int] = field(default_factory=set)
     assigned_slot: Optional[TimeSlot] = None
     assigned_room: Optional[str] = None
 
@@ -53,6 +57,7 @@ class Room:
     capacity: int
     room_type: str
     building: str
+    campus: str = 'Unknown'
 
 
 @dataclass
@@ -77,7 +82,9 @@ class TimetableCSP:
         self.events: Dict[str, Event] = {}
         self.room_schedule: Dict[str, Dict[TimeSlot, str]] = defaultdict(dict)  # room -> {slot -> event_id}
         self.student_schedules: Dict[str, List[TimeSlot]] = defaultdict(list)
+        self.campus_hours: Dict[str, Dict[str, Tuple[int, int]]] = {}  # campus -> {day -> (start, end)}
         
+        self._load_campus_constraints()
         self._init_available_slots()
         self._init_rooms()
         self._init_events()
@@ -102,6 +109,42 @@ class TimetableCSP:
             for hour in hours:
                 self.available_slots.append(TimeSlot(day, hour, hour + 1))
     
+    def _load_campus_constraints(self):
+        """Load campus-specific teaching hours from Room Constraints sheet."""
+        try:
+            constraints_df = pd.read_excel(DATA_RAW / "Rooms_and_Room_Types.xlsx", sheet_name='Room Constraints')
+            days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+            
+            for _, row in constraints_df.iterrows():
+                campus = row.get('Campus')
+                if pd.isna(campus):
+                    continue
+                campus = str(campus).strip()
+                
+                if campus not in self.campus_hours:
+                    self.campus_hours[campus] = {}
+                
+                for day in days:
+                    hours_str = row.get(day) if day in constraints_df.columns else row.get('Teaching Hours')
+                    if pd.isna(hours_str):
+                        # Default to 9-6
+                        self.campus_hours[campus][day] = (9, 18)
+                    else:
+                        # Parse "9am-6pm" or "9am-1pm" format
+                        match = re.search(r'(\d+)(?:am)?\s*-\s*(\d+)(?:pm)?', str(hours_str))
+                        if match:
+                            start = int(match.group(1))
+                            end = int(match.group(2))
+                            if end < start:  # Handle pm conversion
+                                end += 12
+                            self.campus_hours[campus][day] = (start, end)
+                        else:
+                            self.campus_hours[campus][day] = (9, 18)
+        except Exception as e:
+            print(f"Warning: Could not load campus constraints: {e}")
+            # Fallback to empty
+            self.campus_hours = {}
+    
     def _init_rooms(self):
         """Initialize room data."""
         rooms_df = self.loader.rooms
@@ -110,7 +153,8 @@ class TimetableCSP:
                 name=str(row['Description']),
                 capacity=int(row['Capacity']) if pd.notna(row['Capacity']) else 0,
                 room_type=str(row.get('Room Type', 'Unknown')),
-                building=str(row.get('Building', 'Unknown'))
+                building=str(row.get('Building', 'Unknown')),
+                campus=str(row.get('Campus', 'Unknown')) if pd.notna(row.get('Campus')) else 'Unknown'
             )
             self.rooms[room.name] = room
     
@@ -134,6 +178,38 @@ class TimetableCSP:
                 if self._is_slot_in_bounds(slot):
                     event.assigned_slot = slot
                     event.assigned_room = str(row['Room']) if pd.notna(row['Room']) else None
+            
+            # Parse Weeks
+            weeks_str = row.get('Weeks')
+            weeks = set()
+            if pd.notna(weeks_str):
+                # Handle "1-5, 7-10" format
+                parts = str(weeks_str).split(',')
+                for part in parts:
+                    part = part.strip()
+                    if '-' in part:
+                        try:
+                            start, end = part.split('-')
+                            weeks.update(range(int(start), int(end) + 1))
+                        except ValueError:
+                            pass
+                    else:
+                        try:
+                            weeks.add(int(part))
+                        except ValueError:
+                            pass
+            if not weeks:
+                weeks = {1}  # Default to week 1 if missing
+
+            event.weeks = weeks
+            
+            # Parse Online Delivery
+            online_val = row.get('Online Delivery')
+            event.online = bool(online_val) if pd.notna(online_val) else False
+            
+            # Parse Campus
+            campus_val = row.get('Campus')
+            event.campus = str(campus_val).strip() if pd.notna(campus_val) else 'Unknown'
             
             self.events[event_id] = event
     
@@ -170,6 +246,10 @@ class TimetableCSP:
         room_usage = defaultdict(list)  # room -> [(slot, event)]
         
         for event in self.get_scheduled_events():
+            # Skip online events from room checks
+            if event.online:
+                continue
+                
             if event.assigned_room and event.assigned_slot:
                 room_usage[event.assigned_room].append((event.assigned_slot, event))
                 
@@ -183,7 +263,9 @@ class TimetableCSP:
             for i, (slot1, evt1) in enumerate(bookings):
                 for slot2, evt2 in bookings[i+1:]:
                     if slot1.overlaps(slot2):
-                        clashes += 1
+                        # check week overlap
+                        if not evt1.weeks.isdisjoint(evt2.weeks):
+                             clashes += 1
         
         unscheduled = len(self.get_displaced_events())
         scheduled = len(self.get_scheduled_events())
@@ -217,17 +299,24 @@ class TimetableCSP:
             if not self._is_slot_in_bounds(extended_slot):
                 continue
             
-            # Find suitable room
+            # Find suitable room (must match campus)
             for room_name, room in self.rooms.items():
                 if room.capacity < event.event_size:
                     continue
                 
+                # Campus match
+                if event.campus != 'Unknown' and room.campus != 'Unknown':
+                    if event.campus != room.campus:
+                        continue
+                
                 # Check if room is available
                 is_available = True
-                for (booked_slot, _) in self.room_schedule.get(room_name, {}).items():
+                for (booked_slot, booked_event_id) in self.room_schedule.get(room_name, {}).items():
                     if extended_slot.overlaps(booked_slot):
-                        is_available = False
-                        break
+                        booked_event = self.events[booked_event_id]
+                        if not event.weeks.isdisjoint(booked_event.weeks):
+                            is_available = False
+                            break
                 
                 if is_available:
                     return (extended_slot, room_name)
