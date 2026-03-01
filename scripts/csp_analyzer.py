@@ -1,12 +1,13 @@
-"""
-CSP Analyzer Module for University Timetabling.
-
-Models the timetabling problem as a Constraint Satisfaction Problem (CSP)
-with optimization via Simulated Annealing for displaced events.
-"""
+# Soft Constraint Threshold
+# Double bookings (multiple events in the same room at the same time) are
+# known to be intentional at Edinburgh (Maths studio pods, ECA project spaces,
+# Chemistry/Engineering labs, Medicine LT block-bookings, etc.).
+# They are therefore treated as a SOFT constraint: the rate is tracked and
+# only flagged as a warning when it exceeds this threshold.
+# The baseline dataset double-booking rate acts as the natural reference point.
+DOUBLE_BOOKING_THRESHOLD_PCT: float = 15.0  # % of room-slot combinations that may be double-booked
 
 import pandas as pd
-import numpy as np
 from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass, field
 from collections import defaultdict
@@ -67,8 +68,11 @@ class CSPResult:
     events_scheduled: int
     events_unscheduled: int
     capacity_violations: int
-    clash_count: int
+    clash_count: int           # total double-booked room-slot pairs (informational)
+    double_booking_rate: float = 0.0  # % of room-slots that are double-booked (soft constraint)
+    double_booking_threshold: float = DOUBLE_BOOKING_THRESHOLD_PCT
     binding_constraints: List[str] = field(default_factory=list)
+    soft_warnings: List[str] = field(default_factory=list)
 
 
 class TimetableCSP:
@@ -237,55 +241,87 @@ class TimetableCSP:
         return [e for e in self.events.values() if e.assigned_slot is not None]
     
     def check_hard_constraints(self) -> CSPResult:
-        """Check all hard constraints and return feasibility result."""
+        """
+        Check hard and soft constraints and return feasibility result.
+
+        Hard constraints (determine is_feasible):
+          - Room capacity violations
+          - Unscheduled events
+
+        Soft constraints (tracked separately):
+          - Room double-bookings: intentional at Edinburgh (shared studios,
+            lab pods, Medicine LT block-bookings). Only flagged as a warning
+            when the rate exceeds DOUBLE_BOOKING_THRESHOLD_PCT.
+        """
         capacity_violations = 0
         clashes = 0
         binding = []
-        
+        soft_warnings = []
+
         # Build room schedules
         room_usage = defaultdict(list)  # room -> [(slot, event)]
-        
+        total_room_slots = 0
+
         for event in self.get_scheduled_events():
             # Skip online events from room checks
             if event.online:
                 continue
-                
+
             if event.assigned_room and event.assigned_slot:
                 room_usage[event.assigned_room].append((event.assigned_slot, event))
-                
-                # Check capacity
+                total_room_slots += 1
+
+                # Hard: capacity check
                 room = self.rooms.get(event.assigned_room)
                 if room and event.event_size > room.capacity:
                     capacity_violations += 1
-        
-        # Check for room double-booking
+
+        # Soft: count double-booked room-slot pairs
         for room_name, bookings in room_usage.items():
             for i, (slot1, evt1) in enumerate(bookings):
-                for slot2, evt2 in bookings[i+1:]:
+                for slot2, evt2 in bookings[i + 1:]:
                     if slot1.overlaps(slot2):
-                        # check week overlap
                         if not evt1.weeks.isdisjoint(evt2.weeks):
-                             clashes += 1
-        
+                            clashes += 1
+
+        # Calculate double-booking rate (as % of total room-slot assignments)
+        double_booking_rate = (
+            (clashes / total_room_slots * 100) if total_room_slots > 0 else 0.0
+        )
+
         unscheduled = len(self.get_displaced_events())
         scheduled = len(self.get_scheduled_events())
-        
-        is_feasible = (capacity_violations == 0 and clashes == 0 and unscheduled == 0)
-        
+
+        # Feasibility is determined by HARD constraints only
+        is_feasible = (capacity_violations == 0 and unscheduled == 0)
+
         if capacity_violations > 0:
             binding.append(f"Room capacity violations: {capacity_violations}")
-        if clashes > 0:
-            binding.append(f"Room double-bookings: {clashes}")
         if unscheduled > 0:
             binding.append(f"Unscheduled events: {unscheduled}")
-        
+
+        # Double bookings: soft warning only if above threshold
+        if double_booking_rate > DOUBLE_BOOKING_THRESHOLD_PCT:
+            soft_warnings.append(
+                f"Double-booking rate {double_booking_rate:.1f}% exceeds "
+                f"threshold ({DOUBLE_BOOKING_THRESHOLD_PCT}%): {clashes} overlapping room-slot pairs"
+            )
+        else:
+            soft_warnings.append(
+                f"Double-booking rate {double_booking_rate:.1f}% is within "
+                f"acceptable threshold ({DOUBLE_BOOKING_THRESHOLD_PCT}%): {clashes} pairs"
+            )
+
         return CSPResult(
             is_feasible=is_feasible,
             events_scheduled=scheduled,
             events_unscheduled=unscheduled,
             capacity_violations=capacity_violations,
             clash_count=clashes,
-            binding_constraints=binding
+            double_booking_rate=round(double_booking_rate, 2),
+            double_booking_threshold=DOUBLE_BOOKING_THRESHOLD_PCT,
+            binding_constraints=binding,
+            soft_warnings=soft_warnings,
         )
     
     def find_available_slot(self, event: Event) -> Optional[Tuple[TimeSlot, str]]:
@@ -342,64 +378,384 @@ class TimetableCSP:
         
         return scheduled_count
     
-    def simulated_annealing(self, max_iterations: int = 1000, initial_temp: float = 100.0) -> int:
+    # ------------------------------------------------------------------
+    # Schedule management helpers
+    # ------------------------------------------------------------------
+
+    def _assign_event(self, event: Event, slot: TimeSlot, room: str) -> None:
+        """Assign an event to a slot and room, updating the schedule index."""
+        event.assigned_slot = slot
+        event.assigned_room = room
+        self.room_schedule[room][slot] = event.event_id
+
+    def _unassign_event(self, event: Event) -> None:
+        """Remove an event from its current slot and room."""
+        if event.assigned_room and event.assigned_slot:
+            room_sched = self.room_schedule.get(event.assigned_room, {})
+            slots_to_remove = [s for s, eid in room_sched.items()
+                               if eid == event.event_id]
+            for s in slots_to_remove:
+                del room_sched[s]
+        event.assigned_slot = None
+        event.assigned_room = None
+
+    def _is_slot_room_available(self, event: Event, slot: TimeSlot,
+                                 room_name: str) -> bool:
+        """Return True if event can be placed in slot+room (ignores event's own booking)."""
+        if not self._is_slot_in_bounds(slot):
+            return False
+        room = self.rooms.get(room_name)
+        if not room or room.capacity < event.event_size:
+            return False
+        if event.campus != 'Unknown' and room.campus != 'Unknown':
+            if event.campus != room.campus:
+                return False
+        for booked_slot, booked_event_id in self.room_schedule.get(room_name, {}).items():
+            if booked_event_id == event.event_id:
+                continue   # skip the event's own booking if any
+            if slot.overlaps(booked_slot):
+                booked_event = self.events.get(booked_event_id)
+                if booked_event and not event.weeks.isdisjoint(booked_event.weeks):
+                    return False
+        return True
+
+    # ------------------------------------------------------------------
+    # Simulated Annealing
+    # ------------------------------------------------------------------
+
+    def simulated_annealing(self, max_iterations: int = 10_000,
+                             initial_temp: float = 10.0,
+                             cooling_rate: float = 0.998) -> int:
         """
-        Use Simulated Annealing to optimize event placement.
-        Returns number of additional events scheduled.
+        Simulated Annealing optimizer for re-inserting displaced events.
+
+        Two move types per iteration:
+
+          place  (40%): try to insert a random unscheduled event into a
+                        truly free slot (same as greedy but randomised).
+
+          evict  (60%): pick a scheduled event S whose room/slot an
+                        unscheduled event U could occupy.  Evict S,
+                        place U, then try to re-home S elsewhere.
+                        - If S re-homes: net improvement (ΔE = -1)  → always accept
+                        - If S can't re-home: neutral (ΔE = 0, different event
+                          is now unscheduled) → accept with Metropolis criterion
+                        This breaks greedy local optima by letting easier events
+                        be temporarily displaced to make room for harder ones.
+
+        Acceptance rule (Metropolis criterion):
+          ΔE ≤ 0  → always accept
+          ΔE > 0  → accept with probability  P = exp(-ΔE / T)
+
+        Returns the number of *additional* events scheduled beyond greedy.
         """
         displaced = self.get_displaced_events()
         if not displaced:
             return 0
-        
+
         initial_unscheduled = len(displaced)
         temp = initial_temp
-        cooling_rate = 0.995
-        
-        for iteration in range(max_iterations):
-            # Try to schedule a random displaced event
+        scheduled_events = self.get_scheduled_events()
+
+        for _ in range(max_iterations):
             if not displaced:
                 break
-            
-            event = random.choice(displaced)
-            result = self.find_available_slot(event)
-            
-            if result:
-                slot, room = result
-                event.assigned_slot = slot
-                event.assigned_room = room
-                self.room_schedule[room][slot] = event.event_id
-                displaced.remove(event)
+
+            # ---- Move: direct placement (40%) ----
+            if random.random() < 0.4 or not scheduled_events:
+                event = random.choice(displaced)
+                result = self.find_available_slot(event)
+                if result:
+                    slot, room = result
+                    self._assign_event(event, slot, room)
+                    displaced.remove(event)
+                    scheduled_events.append(event)
+
+            # ---- Move: evict-and-swap (60%) ----
             else:
-                # With probability based on temperature, try to swap with existing
-                if random.random() < math.exp(-1 / max(temp, 0.01)):
-                    # Attempt swap logic here (simplified)
-                    pass
-            
+                event_u = random.choice(displaced)
+
+                # Candidates: scheduled events whose room is large enough
+                # and on the right campus for event_u
+                candidates = [
+                    evt for evt in scheduled_events
+                    if (not evt.online
+                        and evt.assigned_room
+                        and evt.assigned_slot
+                        and (room := self.rooms.get(evt.assigned_room)) is not None
+                        and room.capacity >= event_u.event_size
+                        and (event_u.campus == 'Unknown'
+                             or room.campus == 'Unknown'
+                             or event_u.campus == room.campus))
+                ]
+                if not candidates:
+                    temp *= cooling_rate
+                    continue
+
+                event_s = random.choice(candidates)
+                saved_slot = event_s.assigned_slot
+                saved_room = event_s.assigned_room
+
+                # Evict S temporarily
+                self._unassign_event(event_s)
+
+                # Check if U fits in S's old slot/room
+                if self._is_slot_room_available(event_u, saved_slot, saved_room):
+                    self._assign_event(event_u, saved_slot, saved_room)
+                    displaced.remove(event_u)
+                    scheduled_events.append(event_u)
+
+                    # Try to re-home S
+                    result_s = self.find_available_slot(event_s)
+                    if result_s:
+                        # S re-homed → net improvement (ΔE = -1), always accept
+                        slot_s, room_s = result_s
+                        self._assign_event(event_s, slot_s, room_s)
+                    else:
+                        # S homeless → neutral swap (ΔE = 0): U placed, S now displaced.
+                        # Accept with Metropolis probability (helps exploration).
+                        delta_e = 1
+                        if random.random() < math.exp(-delta_e / max(temp, 1e-9)):
+                            displaced.append(event_s)
+                            scheduled_events.remove(event_s)
+                        else:
+                            # Reject: undo the whole move
+                            self._unassign_event(event_u)
+                            displaced.append(event_u)
+                            scheduled_events.remove(event_u)
+                            self._assign_event(event_s, saved_slot, saved_room)
+                else:
+                    # U can't fit in S's slot/room → restore S
+                    self._assign_event(event_s, saved_slot, saved_room)
+
             temp *= cooling_rate
-        
+
         return initial_unscheduled - len(displaced)
 
+    # ------------------------------------------------------------------
+    # Timetable export
+    # ------------------------------------------------------------------
 
-def analyze_scenario(scenario: str) -> Dict:
-    """Run full CSP analysis for a scenario."""
+    def export_timetable(self, output_path: str) -> str:
+        """
+        Export the best-effort timetable to an Excel file.
+
+        Two sheets are produced:
+          'Timetable'   – Every event that was successfully scheduled,
+                          showing its final slot and room.  Events that
+                          were re-assigned by the optimiser are flagged
+                          so it's clear what changed.
+          'Violations'  – Events that could NOT be placed within the
+                          scenario's allowed hours, along with a plain-
+                          English reason so the university knows exactly
+                          what still needs a manual solution.
+        """
+        from pathlib import Path
+        import openpyxl
+        from openpyxl.styles import PatternFill, Font, Alignment
+        from openpyxl.utils import get_column_letter
+
+        # ---- Collect original timeslots from the raw events data ----
+        raw_events = self.loader.events.copy()
+        orig_slots = {}  # event_id -> (original_day, original_start)
+        for _, row in raw_events.iterrows():
+            orig_slots[str(row['Event ID'])] = {
+                'orig_day':   row.get('Day'),
+                'orig_start': row.get('Start Hour'),
+                'orig_room':  row.get('Room'),
+                'module':     row.get('Module Code', ''),
+                'event_type': row.get('Event Type', ''),
+                'event_size': row.get('Event Size', 0),
+                'duration':   row.get('Duration (minutes)', 0),
+                'campus':     row.get('Campus', ''),
+                'weeks':      row.get('Weeks', ''),
+            }
+
+        # ---- Build scheduled sheet rows ----
+        def format_time(hour_float):
+            if pd.isna(hour_float) or hour_float == '':
+                return ''
+            try:
+                h = int(hour_float)
+                m = int(round((float(hour_float) - h) * 60))
+                if m == 60:
+                    h += 1
+                    m = 0
+                return f"{h:02d}:{m:02d}"
+            except (ValueError, TypeError):
+                return ''
+
+        scheduled_rows = []
+        for event in self.get_scheduled_events():
+            orig = orig_slots.get(event.event_id, {})
+            orig_day   = orig.get('orig_day', '')
+            orig_start = orig.get('orig_start', '')
+            new_day    = event.assigned_slot.day   if event.assigned_slot else ''
+            new_start  = event.assigned_slot.start_hour if event.assigned_slot else ''
+            new_end    = event.assigned_slot.end_hour   if event.assigned_slot else ''
+
+            # Was this event re-assigned by the optimiser?
+            was_moved = (orig_day != new_day or orig_start != new_start)
+
+            # Capacity violation flag
+            room_obj = self.rooms.get(event.assigned_room or '')
+            cap_ok = (room_obj is None or event.event_size <= room_obj.capacity)
+
+            scheduled_rows.append({
+                'Event ID':         event.event_id,
+                'Module Code':      orig.get('module', ''),
+                'Event Type':       orig.get('event_type', ''),
+                'Event Size':       event.event_size,
+                'Duration (min)':   orig.get('duration', event.duration_minutes),
+                'Campus':           orig.get('campus', event.campus),
+                'Weeks':            orig.get('weeks', ''),
+                'Original Day':     orig_day,
+                'Original Start':   format_time(orig_start),
+                'New Day':          new_day,
+                'New Start':        format_time(new_start),
+                'New End':          format_time(new_end),
+                'Room':             event.assigned_room or '',
+                'Room Capacity':    room_obj.capacity if room_obj else '',
+                'Re-assigned':      'Yes' if was_moved else 'No',
+                'Capacity OK':      'Yes' if cap_ok else '⚠ Violation',
+            })
+
+        # ---- Build violations sheet rows ----
+        violation_rows = []
+        rooms_df = self.loader.rooms.set_index('Description') if len(self.loader.rooms) else None
+
+        for event in self.get_displaced_events():
+            orig = orig_slots.get(event.event_id, {})
+
+            # Diagnose why it couldn't be placed
+            reasons = []
+            # Check if any room is big enough at all
+            big_enough = [r for r in self.rooms.values() if r.capacity >= event.event_size]
+            if not big_enough:
+                reasons.append(f"No room fits event size {event.event_size}")
+            else:
+                # Campus constraint
+                campus_rooms = [r for r in big_enough
+                                if event.campus in ('Unknown', r.campus, '')
+                                or r.campus == 'Unknown']
+                if not campus_rooms:
+                    reasons.append(f"No room on campus '{event.campus}' with capacity >= {event.event_size}")
+                else:
+                    reasons.append("All suitable slots occupied after optimisation")
+
+            violation_rows.append({
+                'Event ID':      event.event_id,
+                'Module Code':   orig.get('module', ''),
+                'Event Type':    orig.get('event_type', ''),
+                'Event Size':    event.event_size,
+                'Duration (min)': orig.get('duration', event.duration_minutes),
+                'Campus':        orig.get('campus', event.campus),
+                'Weeks':         orig.get('weeks', ''),
+                'Original Day':  orig.get('orig_day', ''),
+                'Original Start': format_time(orig.get('orig_start', '')),
+                'Reason':        '; '.join(reasons),
+                'Suggested Action': 'Manual scheduling required',
+            })
+
+        # ---- Write to Excel ----
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        wb = openpyxl.Workbook()
+
+        # --- Sheet 1: Timetable ---
+        ws1 = wb.active
+        ws1.title = 'Timetable'
+
+        header_fill  = PatternFill('solid', fgColor='1F4E79')
+        moved_fill   = PatternFill('solid', fgColor='FFF2CC')   # light yellow
+        cap_vio_fill = PatternFill('solid', fgColor='FFE0E0')   # light red
+        header_font  = Font(bold=True, color='FFFFFF')
+
+        if scheduled_rows:
+            cols = list(scheduled_rows[0].keys())
+            for col_idx, col in enumerate(cols, 1):
+                cell = ws1.cell(row=1, column=col_idx, value=col)
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal='center')
+
+            for row_idx, row_data in enumerate(scheduled_rows, 2):
+                for col_idx, col in enumerate(cols, 1):
+                    ws1.cell(row=row_idx, column=col_idx, value=row_data[col])
+                # Highlight re-assigned rows
+                if row_data['Re-assigned'] == 'Yes':
+                    for col_idx in range(1, len(cols) + 1):
+                        ws1.cell(row=row_idx, column=col_idx).fill = moved_fill
+                # Highlight capacity violations
+                if row_data['Capacity OK'] != 'Yes':
+                    ws1.cell(row=row_idx, column=cols.index('Capacity OK') + 1).fill = cap_vio_fill
+
+            # Auto-fit columns
+            for col_idx in range(1, len(cols) + 1):
+                ws1.column_dimensions[get_column_letter(col_idx)].width = 18
+
+        # --- Sheet 2: Violations ---
+        ws2 = wb.create_sheet('Violations')
+        vio_header_fill = PatternFill('solid', fgColor='8B0000')
+
+        if violation_rows:
+            cols2 = list(violation_rows[0].keys())
+            for col_idx, col in enumerate(cols2, 1):
+                cell = ws2.cell(row=1, column=col_idx, value=col)
+                cell.fill = vio_header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal='center')
+
+            for row_idx, row_data in enumerate(violation_rows, 2):
+                for col_idx, col in enumerate(cols2, 1):
+                    ws2.cell(row=row_idx, column=col_idx, value=row_data[col])
+
+            for col_idx in range(1, len(cols2) + 1):
+                ws2.column_dimensions[get_column_letter(col_idx)].width = 22
+
+        ws2.cell(row=1 if not violation_rows else len(violation_rows) + 3,
+                 column=1,
+                 value=f"Total violations: {len(violation_rows)}")
+
+        wb.save(output_path)
+        return output_path
+
+
+def analyze_scenario(scenario: str, export: bool = True) -> Dict:
+    """
+    Run full CSP analysis for a scenario.
+
+    If export=True, writes a best-effort timetable Excel file to
+    outputs/timetable_<scenario>.xlsx — always produced regardless of
+    feasibility, with a Violations sheet for anything that couldn't be placed.
+    """
     print(f"\nAnalyzing {scenario}...")
-    
+
     csp = TimetableCSP(scenario)
-    
+
     # Initial state
     initial_displaced = len(csp.get_displaced_events())
     initial_scheduled = len(csp.get_scheduled_events())
-    
+
     # Check constraints before optimization
-    initial_result = csp.check_hard_constraints()
-    
+    csp.check_hard_constraints()
+
     # Try to reschedule displaced events
     greedy_scheduled = csp.greedy_reschedule()
     sa_scheduled = csp.simulated_annealing()
-    
+
     # Final check
     final_result = csp.check_hard_constraints()
-    
+
+    # Export timetable (always — best effort)
+    export_path = None
+    if export:
+        from pathlib import Path
+        output_dir = Path(__file__).parent.parent / 'outputs'
+        output_dir.mkdir(exist_ok=True)
+        export_path = str(output_dir / f'timetable_{scenario}.xlsx')
+        csp.export_timetable(export_path)
+        print(f"  Timetable exported → {export_path}")
+
     return {
         'scenario': scenario,
         'initial_scheduled': initial_scheduled,
@@ -411,17 +767,26 @@ def analyze_scenario(scenario: str) -> Dict:
         'is_feasible': final_result.is_feasible,
         'capacity_violations': final_result.capacity_violations,
         'clash_count': final_result.clash_count,
-        'binding_constraints': final_result.binding_constraints
+        'double_booking_rate': final_result.double_booking_rate,
+        'double_booking_threshold': final_result.double_booking_threshold,
+        'binding_constraints': final_result.binding_constraints,
+        'soft_warnings': final_result.soft_warnings,
+        'export_path': export_path,
     }
 
 
 if __name__ == "__main__":
     for scenario in ['baseline', 'scenario_a', 'scenario_b']:
-        result = analyze_scenario(scenario)
+        result = analyze_scenario(scenario, export=True)
         print(f"\n{'='*50}")
         print(f"Scenario: {scenario}")
         print(f"Initial: {result['initial_scheduled']} scheduled, {result['initial_displaced']} displaced")
         print(f"After optimization: {result['final_scheduled']} scheduled, {result['final_unscheduled']} unscheduled")
-        print(f"Feasible: {result['is_feasible']}")
+        print(f"Feasible (hard constraints only): {result['is_feasible']}")
         if result['binding_constraints']:
-            print(f"Binding constraints: {result['binding_constraints']}")
+            print(f"Hard constraint violations: {result['binding_constraints']}")
+        print(f"Double-booking rate: {result['double_booking_rate']:.1f}% (threshold: {result['double_booking_threshold']}%)")
+        if result['soft_warnings']:
+            print(f"Soft warnings: {result['soft_warnings']}")
+        if result['export_path']:
+            print(f"Timetable saved: {result['export_path']}")

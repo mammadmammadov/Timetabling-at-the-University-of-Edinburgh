@@ -43,17 +43,39 @@ class EfficiencyKPIs:
 class KPICalculator:
     """Calculates all KPIs for a given scenario."""
     
-    def __init__(self, scenario: str = 'baseline'):
+    def __init__(self, scenario: str = 'baseline', csp=None):
         self.scenario = scenario
         self.loader = TimetableDataLoader()
+        self.csp = csp
         self._events = None
         self._filtered_events = None
     
     @property
     def events(self) -> pd.DataFrame:
-        """Get events filtered by scenario."""
+        """Get events, applying CSP optimized slots if provided."""
         if self._events is None:
-            self._events = self.loader.events.copy()
+            df = self.loader.events.copy()
+            
+            # If we have CSP results, update the dataframe's time and room columns
+            if self.csp is not None:
+                for idx, row in df.iterrows():
+                    event_id = str(row['Event ID'])
+                    # Check scheduled events
+                    evt_obj = self.csp.events.get(event_id)
+                    if evt_obj:
+                        if evt_obj in self.csp.get_scheduled_events() and evt_obj.assigned_slot:
+                            df.at[idx, 'Day'] = evt_obj.assigned_slot.day
+                            df.at[idx, 'Start Hour'] = evt_obj.assigned_slot.start_hour
+                            df.at[idx, 'End Hour'] = evt_obj.assigned_slot.end_hour
+                            df.at[idx, 'Room'] = evt_obj.assigned_room
+                        elif evt_obj in self.csp.get_displaced_events():
+                            # It's explicitly unscheduled by the CSP
+                            df.at[idx, 'Day'] = np.nan
+                            df.at[idx, 'Start Hour'] = np.nan
+                            df.at[idx, 'End Hour'] = np.nan
+                            df.at[idx, 'Room'] = np.nan
+            
+            self._events = df
         return self._events
     
     def get_scenario_hours(self) -> Dict[str, List[int]]:
@@ -110,6 +132,8 @@ class KPICalculator:
             event_size = event.get('Event Size', 0)
             if pd.notna(room) and room in rooms_df.index:
                 room_capacity = rooms_df.loc[room, 'Capacity']
+                if isinstance(room_capacity, pd.Series):
+                    room_capacity = room_capacity.iloc[0]
                 if pd.notna(room_capacity) and event_size > room_capacity:
                     capacity_violations += 1
         

@@ -37,7 +37,13 @@ class TimetableDataLoader:
     def rooms(self) -> pd.DataFrame:
         """Load and cache rooms data."""
         if self._rooms_df is None:
-            self._rooms_df = pd.read_excel(DATA_RAW / "Rooms_and_Room_Types.xlsx")
+            df = pd.read_excel(DATA_RAW / "Rooms_and_Room_Types.xlsx")
+            # Standardize capitalisation of campus names (e.g. Bioquarter -> BioQuarter)
+            if 'Campus' in df.columns:
+                df['Campus'] = df['Campus'].str.title()
+                # Special cases if necessary
+                df['Campus'] = df['Campus'].replace('Bioquarter', 'BioQuarter')
+            self._rooms_df = df
         return self._rooms_df
     
     @property
@@ -75,6 +81,11 @@ class TimetableDataLoader:
             lambda r: r['Start Hour'] + (r['Duration (minutes)'] / 60) if pd.notna(r['Start Hour']) else None,
             axis=1
         )
+        
+        # Standardize campus names
+        if 'Campus' in df.columns:
+            df['Campus'] = df['Campus'].str.title()
+            df['Campus'] = df['Campus'].replace('Bioquarter', 'BioQuarter')
         
         return df
     
