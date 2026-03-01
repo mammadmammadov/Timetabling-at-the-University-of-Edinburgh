@@ -87,6 +87,7 @@ class TimetableCSP:
         self.room_schedule: Dict[str, Dict[TimeSlot, str]] = defaultdict(dict)  # room -> {slot -> event_id}
         self.student_schedules: Dict[str, List[TimeSlot]] = defaultdict(list)
         self.campus_hours: Dict[str, Dict[str, Tuple[int, int]]] = {}  # campus -> {day -> (start, end)}
+        self.allowed_double_bookings: Dict[str, Set[str]] = defaultdict(set) # event_id -> set of event_ids allowed to overlap
         
         self._load_campus_constraints()
         self._init_available_slots()
@@ -163,8 +164,24 @@ class TimetableCSP:
             self.rooms[room.name] = room
     
     def _init_events(self):
-        """Initialize events from data."""
+        """Initialize events from data and extract allowed double bookings."""
         events_df = self.loader.events
+        
+        # Pre-scan for existing double bookings in the raw data
+        # We group by (Day, Start Hour, Room) and any events sharing this are allowed to overlap
+        raw_schedule_groups = defaultdict(list)
+        for _, row in events_df.iterrows():
+            if pd.notna(row['Day']) and pd.notna(row['Start Hour']) and pd.notna(row['Room']):
+                key = (row['Day'], row['Start Hour'], row['Room'])
+                raw_schedule_groups[key].append(str(row['Event ID']))
+                
+        for key, event_ids in raw_schedule_groups.items():
+            if len(event_ids) > 1:
+                # These events all share the same room at the same time in the raw data
+                for eid in event_ids:
+                    # Allow it to overlap with all others in this group
+                    self.allowed_double_bookings[eid].update(e for e in event_ids if e != eid)
+        
         for _, row in events_df.iterrows():
             event_id = str(row['Event ID'])
             event = Event(
@@ -349,6 +366,10 @@ class TimetableCSP:
                 is_available = True
                 for (booked_slot, booked_event_id) in self.room_schedule.get(room_name, {}).items():
                     if extended_slot.overlaps(booked_slot):
+                        # Is it an explicitly allowed double booking?
+                        if booked_event_id in self.allowed_double_bookings.get(event.event_id, set()):
+                            continue # Valid overlap
+                            
                         booked_event = self.events[booked_event_id]
                         if not event.weeks.isdisjoint(booked_event.weeks):
                             is_available = False
@@ -414,6 +435,10 @@ class TimetableCSP:
             if booked_event_id == event.event_id:
                 continue   # skip the event's own booking if any
             if slot.overlaps(booked_slot):
+                # Is it an explicitly allowed double booking?
+                if booked_event_id in self.allowed_double_bookings.get(event.event_id, set()):
+                    continue # Valid overlap
+                    
                 booked_event = self.events.get(booked_event_id)
                 if booked_event and not event.weeks.isdisjoint(booked_event.weeks):
                     return False
@@ -754,7 +779,7 @@ def analyze_scenario(scenario: str, export: bool = True) -> Dict:
         output_dir.mkdir(exist_ok=True)
         export_path = str(output_dir / f'timetable_{scenario}.xlsx')
         csp.export_timetable(export_path)
-        print(f"  Timetable exported → {export_path}")
+        print(f"  Timetable exported -> {export_path}")
 
     return {
         'scenario': scenario,

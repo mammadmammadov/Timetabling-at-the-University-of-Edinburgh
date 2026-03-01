@@ -1,9 +1,3 @@
-"""
-Data Loading and Preprocessing Module for University Timetabling Analysis.
-
-Loads Excel files, parses timeslots, and prepares data for CSP analysis.
-"""
-
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -205,7 +199,6 @@ def get_data_summary() -> Dict:
 
 
 if __name__ == "__main__":
-    # Test loading
     print("Loading data...")
     loader = TimetableDataLoader()
     

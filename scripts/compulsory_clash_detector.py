@@ -1,7 +1,5 @@
 """
-Compulsory Clash Detection Module.
-
-Identifies true compulsory clashes - where whole-class events of compulsory 
+Identifies true compulsory clashes, where whole-class events of compulsory 
 courses for the same programme-year overlap.
 """
 
