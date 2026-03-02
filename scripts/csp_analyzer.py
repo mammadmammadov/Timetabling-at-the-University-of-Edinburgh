@@ -103,11 +103,6 @@ class TimetableCSP:
                 hours = range(9, 18)  # 9am-6pm
             elif self.scenario == 'scenario_a':
                 hours = range(9, 17)  # 9am-5pm
-            elif self.scenario == 'scenario_b':
-                if day == 'Friday':
-                    hours = range(9, 12)  # 9am-12pm on Friday
-                else:
-                    hours = range(9, 18)  # 9am-6pm Mon-Thu
             else:
                 hours = range(9, 18)
             
@@ -243,10 +238,6 @@ class TimetableCSP:
             return 9 <= slot.start_hour and slot.end_hour <= 18
         elif self.scenario == 'scenario_a':
             return 9 <= slot.start_hour and slot.end_hour <= 17
-        elif self.scenario == 'scenario_b':
-            if slot.day == 'Friday':
-                return 9 <= slot.start_hour and slot.end_hour <= 12
-            return 9 <= slot.start_hour and slot.end_hour <= 18
         return False
     
     def get_displaced_events(self) -> List[Event]:
@@ -801,7 +792,7 @@ def analyze_scenario(scenario: str, export: bool = True) -> Dict:
 
 
 if __name__ == "__main__":
-    for scenario in ['baseline', 'scenario_a', 'scenario_b']:
+    for scenario in ['baseline', 'scenario_a']:
         result = analyze_scenario(scenario, export=True)
         print(f"\n{'='*50}")
         print(f"Scenario: {scenario}")

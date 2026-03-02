@@ -86,10 +86,6 @@ class KPICalculator:
             return {day: list(range(9, 18)) for day in days}
         elif self.scenario == 'scenario_a':
             return {day: list(range(9, 17)) for day in days}
-        elif self.scenario == 'scenario_b':
-            hours = {day: list(range(9, 18)) for day in days}
-            hours['Friday'] = list(range(9, 12))
-            return hours
         return {day: list(range(9, 18)) for day in days}
     
     def calculate_feasibility_kpis(self) -> FeasibilityKPIs:

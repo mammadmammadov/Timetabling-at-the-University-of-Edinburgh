@@ -1,0 +1,43 @@
+graph TB
+    subgraph Data Layer
+        RAW[("📁 Raw Excel Files<br/>Events, Rooms, Students,<br/>DPT, Programme-Course")]
+        DL["<b>data_loader.py</b><br/><i>TimetableDataLoader</i><br/>─────────────<br/>• Loads & caches all data<br/>• Parses timeslots → Day + Hour<br/>• Scenario filtering<br/>(baseline / scenario_a / scenario_b)"]
+        RAW --> DL
+    end
+
+    subgraph Analysis Layer
+        CSP["<b>csp_analyzer.py</b><br/><i>TimetableCSP</i><br/>─────────────<br/>• Builds constraint model<br/>• Hard constraints: capacity, scheduling<br/>• Soft constraints: double-booking rate<br/>• Greedy reschedule<br/>• Simulated Annealing optimizer<br/>• Exports timetable .xlsx"]
+
+        CCD["<b>compulsory_clash_detector.py</b><br/><i>CompulsoryClashDetector</i><br/>─────────────<br/>• Maps compulsory courses per<br/> programme-year via DPT data<br/>• Filters by actual enrolments<br/>• Detects whole-class event overlaps<br/> between compulsory course pairs"]
+    end
+
+    subgraph KPI Layer
+        KPI["<b>kpi_calculator.py</b><br/><i>KPICalculator</i><br/>─────────────<br/><b>Tier 1 – Feasibility</b><br/>  clashes · capacity · unscheduled<br/><b>Tier 2 – Student Experience</b><br/>  lunch breaks · daily span<br/><b>Tier 3 – Efficiency</b><br/>  room utilisation · peak hour · bottlenecks"]
+    end
+
+    subgraph Outputs
+        TT["📊 timetable_&lt;scenario&gt;.xlsx<br/>(Timetable + Violations sheets)"]
+        KR["📈 KPI Report<br/>(per-scenario metrics)"]
+    end
+
+    DL -->|"events, rooms,<br/>students"| CSP
+    DL -->|"events, rooms,<br/>DPT, students"| CCD
+    DL -->|"events, rooms,<br/>students"| KPI
+
+    CCD -.->|"compulsory clash<br/>count"| KPI
+    CSP -.->|"optimised schedule<br/>(optional CSP obj)"| KPI
+
+    CSP --> TT
+    KPI --> KR
+
+    classDef dataNode fill:#e8f4f8,stroke:#2980b9,stroke-width:2px,color:#000
+    classDef analysisNode fill:#fef9e7,stroke:#f39c12,stroke-width:2px,color:#000
+    classDef kpiNode fill:#eafaf1,stroke:#27ae60,stroke-width:2px,color:#000
+    classDef outputNode fill:#f4ecf7,stroke:#8e44ad,stroke-width:2px,color:#000
+    classDef fileNode fill:#fdebd0,stroke:#e67e22,stroke-width:1px,color:#000
+
+    class DL dataNode
+    class CSP,CCD analysisNode
+    class KPI kpiNode
+    class TT,KR outputNode
+    class RAW fileNode

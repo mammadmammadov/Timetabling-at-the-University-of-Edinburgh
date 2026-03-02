@@ -168,10 +168,6 @@ class CompulsoryClashDetector:
             return 9 <= start_hour and end_hour <= 18
         elif self.scenario == 'scenario_a':
             return 9 <= start_hour and end_hour <= 17
-        elif self.scenario == 'scenario_b':
-            if day == 'Friday':
-                return 9 <= start_hour and end_hour <= 12
-            return 9 <= start_hour and end_hour <= 18
         
         return True
     
