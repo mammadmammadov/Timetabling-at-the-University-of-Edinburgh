@@ -1,0 +1,106 @@
+graph TB
+    subgraph INIT ["Phase 1 — Initialization: __init__"]
+        direction TB
+        INIT_SP[" "]:::hidden
+        INIT_SP --> SLOTS
+        INIT_SP --> CAMPUS
+        SLOTS["📐 <b>_init_available_slots()</b><br/>─────────────<br/>Generates TimeSlot objects per scenario<br/>baseline: Mon-Fri 9am-6pm<br/>scenario_a: Mon-Fri 9am-5pm"]
+        CAMPUS["🏛 <b>_load_campus_constraints()</b><br/>─────────────<br/>Reads Room Constraints sheet<br/>Parses per-campus teaching hours<br/>e.g. BioQuarter: 9am-1pm Fridays"]
+        ROOMS["🚪 <b>_init_rooms()</b><br/>─────────────<br/>Room: capacity, type, building, campus<br/>Keyed by room description name"]
+        EVENTS["📅 <b>_init_events()</b><br/>─────────────<br/>Parses weeks 1-5, 7-10 into sets<br/>Detects existing double-bookings<br/>Builds allowed_double_bookings map<br/>Assigns slots if within bounds<br/>Unassigned events enter displaced pool"]
+
+        SLOTS ~~~ CAMPUS
+        ROOMS ~~~ EVENTS
+    end
+
+    subgraph SPLIT ["Event Pool Split"]
+        SPLIT_SP[" "]:::hidden
+        SPLIT_SP --> SCHED
+        SPLIT_SP --> DISP
+        SCHED["✅ <b>Scheduled Events</b><br/>Slot within scenario bounds"]
+        DISP["❌ <b>Displaced Events</b><br/>Outside bounds or unassigned"]
+    end
+
+    subgraph CONSTRAINTS ["Phase 2 — Constraint Evaluation: check_hard_constraints()"]
+        direction TB
+        CONST_SP[" "]:::hidden
+        CONST_SP --> HARD
+        CONST_SP --> SOFT
+        HARD["🔴 <b>Hard Constraints</b><br/>determine is_feasible<br/>─────────────<br/>Room capacity >= Event size<br/>All events must be scheduled<br/>─────────────<br/>is_feasible = capacity_violations == 0<br/>AND unscheduled == 0"]
+        SOFT["🟡 <b>Soft Constraint</b><br/>tracked, not blocking<br/>─────────────<br/>Double-booking rate <= 15 pct<br/>─────────────<br/>Intentional at Edinburgh:<br/>shared labs, Maths pods,<br/>Medicine LT block-bookings<br/>Warning only if rate exceeds threshold"]
+    end
+
+    subgraph GREEDY ["Phase 3 — Greedy Reschedule: greedy_reschedule()"]
+        GREEDY_SP[" "]:::hidden
+        GREEDY_SP --> GR
+        GR["🟢 <b>Fast Initial Pass</b><br/>─────────────<br/>1. Sort displaced by size, largest first<br/>2. For each: scan all slots x rooms<br/>3. Check capacity, campus, week-overlap<br/>4. First valid pair assigned immediately<br/>─────────────<br/>Fast but stuck in local optima<br/>Cannot displace already-placed events"]
+    end
+
+    subgraph SA ["Phase 4 — Simulated Annealing: simulated_annealing()"]
+        direction TB
+        SA_SP[" "]:::hidden
+        SA_SP --> PARAMS
+        PARAMS["⚙️ <b>Parameters</b><br/>T0 = 10.0 | alpha = 0.998 | iterations = 10,000"]
+
+        PLACE["🎯 <b>Direct Placement, 40 pct</b><br/>─────────────<br/>Pick random unscheduled event<br/>Find any free slot + room<br/>Same as greedy but randomised order"]
+
+        EVICT["🔄 <b>Evict-and-Swap, 60 pct</b><br/>─────────────<br/>Pick unscheduled U<br/>Find scheduled S whose room fits U<br/>Evict S, place U in S old slot<br/>Try to re-home S elsewhere"]
+
+        METRO["📊 <b>Metropolis Acceptance</b><br/>─────────────<br/>S re-homed: delta = -1, always accept<br/>S homeless: delta = 0, accept with P<br/>U cannot fit: no move, restore S<br/>─────────────<br/>T decreases each iteration<br/>Early exploration, late exploitation"]
+
+        PARAMS --> PLACE
+        PARAMS --> EVICT
+        PLACE --> METRO
+        EVICT --> METRO
+    end
+
+    subgraph EXPORT ["Phase 5 — Export: export_timetable()"]
+        EXP_SP[" "]:::hidden
+        EXP_SP --> SHEET1
+        SHEET1["📋 <b>Sheet 1: Timetable</b><br/>─────────────<br/>All scheduled events<br/>Original vs new day and time<br/>Yellow rows = re-assigned<br/>Red cells = capacity violation"]
+        SHEET2["⚠️ <b>Sheet 2: Violations</b><br/>─────────────<br/>Unplaceable events with diagnosis:<br/>No room fits size<br/>No campus match<br/>All slots occupied"]
+        SHEET1 ~~~ SHEET2
+    end
+
+    subgraph STRUCTS ["Core Data Structures"]
+        direction LR
+        STR_SP[" "]:::hidden
+        STR_SP --> TS
+        TS["<b>TimeSlot</b><br/>day, start_hour, end_hour<br/>overlaps()"]
+        EV["<b>Event</b><br/>id, module, size, type, weeks<br/>assigned_slot, assigned_room"]
+        RM["<b>Room</b><br/>name, capacity, type, campus<br/>building"]
+        CR["<b>CSPResult</b><br/>feasible, scheduled, clashes<br/>binding + soft warnings"]
+    end
+
+    INIT --> SPLIT
+    SCHED --> CONSTRAINTS
+    DISP --> GREEDY
+    CONSTRAINTS -.->|"feasibility report"| EXPORT
+    GREEDY -->|"remaining displaced"| SA
+    SA -->|"optimized schedule"| CONSTRAINTS
+    SA --> EXPORT
+
+    STRUCTS ~~~ INIT
+
+    classDef hidden fill:none,stroke:none,color:transparent,width:0px,height:0px
+    classDef initNode fill:#e8fffe,stroke:#22d3ee,stroke-width:2px,color:#000
+    classDef splitGreen fill:#eafaf1,stroke:#10b981,stroke-width:2px,color:#000
+    classDef splitRed fill:#fef2f2,stroke:#ef4444,stroke-width:2px,color:#000
+    classDef hardNode fill:#fef2f2,stroke:#ef4444,stroke-width:2px,color:#000
+    classDef softNode fill:#fffbeb,stroke:#f59e0b,stroke-width:2px,color:#000
+    classDef greedyNode fill:#eafaf1,stroke:#10b981,stroke-width:2px,color:#000
+    classDef saNode fill:#f5f3ff,stroke:#a78bfa,stroke-width:2px,color:#000
+    classDef exportNode fill:#e8f4f8,stroke:#3b82f6,stroke-width:2px,color:#000
+    classDef structNode fill:#f1f5f9,stroke:#64748b,stroke-width:1px,color:#000
+
+    linkStyle 0,1,4,5,6,7,8,9,14,16 stroke:none,stroke-width:0
+
+    class SLOTS,CAMPUS,ROOMS,EVENTS initNode
+    class SCHED splitGreen
+    class DISP splitRed
+    class HARD hardNode
+    class SOFT softNode
+    class GR greedyNode
+    class PARAMS,PLACE,EVICT,METRO saNode
+    class SHEET1,SHEET2 exportNode
+    class TS,EV,RM,CR structNode
