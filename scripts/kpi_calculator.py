@@ -1,6 +1,4 @@
 """
-KPI Calculator Module for University Timetabling Analysis.
-
 Calculates 3-tier KPIs: Feasibility, Student Experience, and Institutional Efficiency.
 """
 
@@ -74,6 +72,33 @@ class KPICalculator:
                             df.at[idx, 'Start Hour'] = np.nan
                             df.at[idx, 'End Hour'] = np.nan
                             df.at[idx, 'Room'] = np.nan
+            else:
+                # No CSP provided. Look for a generated timetable file!
+                from pathlib import Path
+                output_file = Path(__file__).parent.parent / "outputs" / f"timetable_{self.scenario}.xlsx"
+                if output_file.exists():
+                    try:
+                        # Load the generated timetable
+                        scheduled_df = pd.read_excel(output_file, sheet_name='Scheduled')
+                        scheduled_df['Event ID'] = scheduled_df['Event ID'].astype(str)
+                        scheduled_map = scheduled_df.set_index('Event ID')[['Day', 'Start Hour', 'End Hour', 'Room']].to_dict('index')
+                        
+                        for idx, row in df.iterrows():
+                            event_id = str(row['Event ID'])
+                            if event_id in scheduled_map:
+                                new_data = scheduled_map[event_id]
+                                df.at[idx, 'Day'] = new_data['Day']
+                                df.at[idx, 'Start Hour'] = new_data['Start Hour']
+                                df.at[idx, 'End Hour'] = new_data['End Hour']
+                                df.at[idx, 'Room'] = new_data['Room']
+                            else:
+                                # Not in scheduled sheet = unscheduled
+                                df.at[idx, 'Day'] = np.nan
+                                df.at[idx, 'Start Hour'] = np.nan
+                                df.at[idx, 'End Hour'] = np.nan
+                                df.at[idx, 'Room'] = np.nan
+                    except Exception as e:
+                        print(f"Warning: Could not process {output_file.name} ({e}). Using raw data.")
             
             self._events = df
         return self._events

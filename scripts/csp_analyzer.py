@@ -1,10 +1,3 @@
-# Soft Constraint Threshold
-# Double bookings (multiple events in the same room at the same time) are
-# known to be intentional at Edinburgh (Maths studio pods, ECA project spaces,
-# Chemistry/Engineering labs, Medicine LT block-bookings, etc.).
-# They are therefore treated as a SOFT constraint: the rate is tracked and
-# only flagged as a warning when it exceeds this threshold.
-# The baseline dataset double-booking rate acts as the natural reference point.
 DOUBLE_BOOKING_THRESHOLD_PCT: float = 15.0  # % of room-slot combinations that may be double-booked
 
 import pandas as pd
@@ -150,7 +143,7 @@ class TimetableCSP:
         rooms_df = self.loader.rooms
         for _, row in rooms_df.iterrows():
             room = Room(
-                name=str(row['Description']),
+                name=str(row['Id']),
                 capacity=int(row['Capacity']) if pd.notna(row['Capacity']) else 0,
                 room_type=str(row.get('Room Type', 'Unknown')),
                 building=str(row.get('Building', 'Unknown')),
@@ -158,6 +151,30 @@ class TimetableCSP:
             )
             self.rooms[room.name] = room
     
+    def _parse_weeks(self, weeks_str: str) -> Set[int]:
+        """Convert a weeks string like '1-5, 7-10' or '1' into a set of integers."""
+        if pd.isna(weeks_str):
+            return {1} # Default to week 1 to be conservative
+            
+        weeks = set()
+        parts = str(weeks_str).split(',')
+        for part in parts:
+            part = part.strip()
+            if not part: continue
+            
+            if '-' in part:
+                try:
+                    start, end = part.split('-')
+                    weeks.update(range(int(start), int(end) + 1))
+                except ValueError:
+                    pass
+            else:
+                try:
+                    weeks.add(int(part))
+                except ValueError:
+                    pass
+        return weeks if weeks else {1}
+        
     def _init_events(self):
         """Initialize events from data and extract allowed double bookings."""
         events_df = self.loader.events
@@ -180,12 +197,15 @@ class TimetableCSP:
         for _, row in events_df.iterrows():
             event_id = str(row['Event ID'])
             event = Event(
-                event_id=event_id,
-                module_code=str(row['Module Code']),
-                duration_minutes=int(row['Duration (minutes)']) if pd.notna(row['Duration (minutes)']) else 50,
+                event_id=str(row['Event ID']),
+                module_code=str(row['Module Code']) if pd.notna(row['Module Code']) else 'Unknown',
+                duration_minutes=int(row['Duration (minutes)']) if pd.notna(row['Duration (minutes)']) else 60,
                 event_size=int(row['Event Size']) if pd.notna(row['Event Size']) else 0,
-                event_type=str(row['Event Type']),
-                is_whole_class=bool(row['WholeClass']) if pd.notna(row['WholeClass']) else False
+                event_type=str(row['Event Type']) if pd.notna(row['Event Type']) else 'Unknown',
+                is_whole_class=bool(row['WholeClass']) if 'WholeClass' in row and pd.notna(row['WholeClass']) else False,
+                online=False,
+                campus=str(row.get('Campus', 'Unknown')) if pd.notna(row.get('Campus')) else 'Unknown',
+                weeks=self._parse_weeks(row.get('Weeks'))
             )
             
             # Set current assignment if within scenario bounds
@@ -230,7 +250,7 @@ class TimetableCSP:
             self.events[event_id] = event
     
     def _is_slot_in_bounds(self, slot: TimeSlot) -> bool:
-        """Check if a timeslot is within scenario bounds."""
+        """checking if a timeslot is within scenario bounds."""
         if slot.day in ['Saturday', 'Sunday']:
             return False
         
@@ -241,23 +261,23 @@ class TimetableCSP:
         return False
     
     def get_displaced_events(self) -> List[Event]:
-        """Get events that need to be rescheduled."""
+        """getting events that need to be rescheduled."""
         return [e for e in self.events.values() if e.assigned_slot is None]
     
     def get_scheduled_events(self) -> List[Event]:
-        """Get events that are currently scheduled."""
+        """getting events that are currently scheduled."""
         return [e for e in self.events.values() if e.assigned_slot is not None]
     
     def check_hard_constraints(self) -> CSPResult:
         """
-        Check hard and soft constraints and return feasibility result.
+        checking hard and soft constraints and returning feasibility result.
 
-        Hard constraints (determine is_feasible):
-          - Room capacity violations
-          - Unscheduled events
+        hard constraints (determine is_feasible):
+          - room capacity violations
+          - unscheduled events
 
-        Soft constraints (tracked separately):
-          - Room double-bookings: intentional at Edinburgh (shared studios,
+        soft constraints (tracked separately):
+          - room double-bookings: intentional at Edinburgh (shared studios,
             lab pods, Medicine LT block-bookings). Only flagged as a warning
             when the rate exceeds DOUBLE_BOOKING_THRESHOLD_PCT.
         """
@@ -266,12 +286,12 @@ class TimetableCSP:
         binding = []
         soft_warnings = []
 
-        # Build room schedules
+        # building room schedules
         room_usage = defaultdict(list)  # room -> [(slot, event)]
         total_room_slots = 0
 
         for event in self.get_scheduled_events():
-            # Skip online events from room checks
+            # skipping online events from room checks
             if event.online:
                 continue
 
@@ -279,12 +299,12 @@ class TimetableCSP:
                 room_usage[event.assigned_room].append((event.assigned_slot, event))
                 total_room_slots += 1
 
-                # Hard: capacity check
+                # hard: capacity check
                 room = self.rooms.get(event.assigned_room)
                 if room and event.event_size > room.capacity:
                     capacity_violations += 1
 
-        # Soft: count double-booked room-slot pairs
+        # soft: count double-booked room-slot pairs
         for room_name, bookings in room_usage.items():
             for i, (slot1, evt1) in enumerate(bookings):
                 for slot2, evt2 in bookings[i + 1:]:
@@ -292,7 +312,7 @@ class TimetableCSP:
                         if not evt1.weeks.isdisjoint(evt2.weeks):
                             clashes += 1
 
-        # Calculate double-booking rate (as % of total room-slot assignments)
+        # calculate double-booking rate (as % of total room-slot assignments)
         double_booking_rate = (
             (clashes / total_room_slots * 100) if total_room_slots > 0 else 0.0
         )
@@ -300,7 +320,7 @@ class TimetableCSP:
         unscheduled = len(self.get_displaced_events())
         scheduled = len(self.get_scheduled_events())
 
-        # Feasibility is determined by HARD constraints only
+        # feasibility is determined by hard constraints only
         is_feasible = (capacity_violations == 0 and unscheduled == 0)
 
         if capacity_violations > 0:
@@ -308,7 +328,7 @@ class TimetableCSP:
         if unscheduled > 0:
             binding.append(f"Unscheduled events: {unscheduled}")
 
-        # Double bookings: soft warning only if above threshold
+        # double bookings: soft warning only if above threshold
         if double_booking_rate > DOUBLE_BOOKING_THRESHOLD_PCT:
             soft_warnings.append(
                 f"Double-booking rate {double_booking_rate:.1f}% exceeds "
@@ -333,22 +353,22 @@ class TimetableCSP:
         )
     
     def find_available_slot(self, event: Event) -> Optional[Tuple[TimeSlot, str]]:
-        """Find an available slot and room for an event using greedy search."""
+        """finding an available slot and room for an event using greedy search."""
         duration_hours = event.duration_minutes / 60
         
         for slot in self.available_slots:
-            # Create extended slot for event duration
+            # create extended slot for event duration
             extended_slot = TimeSlot(slot.day, slot.start_hour, slot.start_hour + duration_hours)
             
             if not self._is_slot_in_bounds(extended_slot):
                 continue
             
-            # Find suitable room (must match campus)
+            # find suitable room (must match campus)
             for room_name, room in self.rooms.items():
                 if room.capacity < event.event_size:
                     continue
                 
-                # Campus match
+                # campus match
                 if event.campus != 'Unknown' and room.campus != 'Unknown':
                     if event.campus != room.campus:
                         continue
@@ -372,11 +392,11 @@ class TimetableCSP:
         return None
     
     def greedy_reschedule(self) -> int:
-        """Attempt to reschedule displaced events using greedy approach."""
+        """attempt to reschedule displaced events using greedy approach."""
         displaced = self.get_displaced_events()
         scheduled_count = 0
         
-        # Sort by size (larger events first - harder to place)
+        # sort by size (larger events first - harder to place)
         displaced.sort(key=lambda e: -e.event_size)
         
         for event in displaced:
@@ -395,13 +415,13 @@ class TimetableCSP:
     # ------------------------------------------------------------------
 
     def _assign_event(self, event: Event, slot: TimeSlot, room: str) -> None:
-        """Assign an event to a slot and room, updating the schedule index."""
+        """assigning an event to a slot and room, updating the schedule index."""
         event.assigned_slot = slot
         event.assigned_room = room
         self.room_schedule[room][slot] = event.event_id
 
     def _unassign_event(self, event: Event) -> None:
-        """Remove an event from its current slot and room."""
+        """unassigning an event from its current slot and room."""
         if event.assigned_room and event.assigned_slot:
             room_sched = self.room_schedule.get(event.assigned_room, {})
             slots_to_remove = [s for s, eid in room_sched.items()
@@ -413,7 +433,7 @@ class TimetableCSP:
 
     def _is_slot_room_available(self, event: Event, slot: TimeSlot,
                                  room_name: str) -> bool:
-        """Return True if event can be placed in slot+room (ignores event's own booking)."""
+        """returning True if event can be placed in slot+room (ignores event's own booking)."""
         if not self._is_slot_in_bounds(slot):
             return False
         room = self.rooms.get(room_name)
@@ -435,35 +455,33 @@ class TimetableCSP:
                     return False
         return True
 
-    # ------------------------------------------------------------------
     # Simulated Annealing
-    # ------------------------------------------------------------------
 
     def simulated_annealing(self, max_iterations: int = 10_000,
                              initial_temp: float = 10.0,
                              cooling_rate: float = 0.998) -> int:
         """
-        Simulated Annealing optimizer for re-inserting displaced events.
+        simulated annealing optimizer for re-inserting displaced events.
 
-        Two move types per iteration:
+        two move types per iteration:
 
-          place  (40%): try to insert a random unscheduled event into a
+        place  (40%): try to insert a random unscheduled event into a
                         truly free slot (same as greedy but randomised).
 
-          evict  (60%): pick a scheduled event S whose room/slot an
+        evict  (60%): pick a scheduled event S whose room/slot an
                         unscheduled event U could occupy.  Evict S,
                         place U, then try to re-home S elsewhere.
-                        - If S re-homes: net improvement (ΔE = -1)  → always accept
-                        - If S can't re-home: neutral (ΔE = 0, different event
-                          is now unscheduled) → accept with Metropolis criterion
+                        - If S re-homes: net improvement (delta E = -1) -> always accept
+                        - If S can't re-home: neutral (delta E = 0, different event
+                          is now unscheduled) -> accept with Metropolis criterion
                         This breaks greedy local optima by letting easier events
                         be temporarily displaced to make room for harder ones.
 
-        Acceptance rule (Metropolis criterion):
-          ΔE ≤ 0  → always accept
-          ΔE > 0  → accept with probability  P = exp(-ΔE / T)
+        acceptance rule (Metropolis criterion):
+          delta E <= 0  -> always accept
+          delta E > 0  -> accept with probability  P = exp(-delta E / T)
 
-        Returns the number of *additional* events scheduled beyond greedy.
+        returns the number of additional events scheduled beyond greedy.
         """
         displaced = self.get_displaced_events()
         if not displaced:
@@ -477,7 +495,7 @@ class TimetableCSP:
             if not displaced:
                 break
 
-            # ---- Move: direct placement (40%) ----
+            # move: direct placement (40%)
             if random.random() < 0.4 or not scheduled_events:
                 event = random.choice(displaced)
                 result = self.find_available_slot(event)
@@ -487,11 +505,11 @@ class TimetableCSP:
                     displaced.remove(event)
                     scheduled_events.append(event)
 
-            # ---- Move: evict-and-swap (60%) ----
+            # move: evict-and-swap (60%)
             else:
                 event_u = random.choice(displaced)
 
-                # Candidates: scheduled events whose room is large enough
+                # candidates: scheduled events whose room is large enough
                 # and on the right campus for event_u
                 candidates = [
                     evt for evt in scheduled_events
@@ -512,23 +530,23 @@ class TimetableCSP:
                 saved_slot = event_s.assigned_slot
                 saved_room = event_s.assigned_room
 
-                # Evict S temporarily
+                # evicting S temporarily
                 self._unassign_event(event_s)
 
-                # Check if U fits in S's old slot/room
+                # checking if U fits in S's old slot/room
                 if self._is_slot_room_available(event_u, saved_slot, saved_room):
                     self._assign_event(event_u, saved_slot, saved_room)
                     displaced.remove(event_u)
                     scheduled_events.append(event_u)
 
-                    # Try to re-home S
+                    # trying to re-home S
                     result_s = self.find_available_slot(event_s)
                     if result_s:
-                        # S re-homed → net improvement (ΔE = -1), always accept
+                        # S re-homed → net improvement (delta E = -1), always accept
                         slot_s, room_s = result_s
                         self._assign_event(event_s, slot_s, room_s)
                     else:
-                        # S homeless → neutral swap (ΔE = 0): U placed, S now displaced.
+                        # S homeless → neutral swap (delta E = 0): U placed, S now displaced.
                         # Accept with Metropolis probability (helps exploration).
                         delta_e = 1
                         if random.random() < math.exp(-delta_e / max(temp, 1e-9)):
@@ -548,15 +566,13 @@ class TimetableCSP:
 
         return initial_unscheduled - len(displaced)
 
-    # ------------------------------------------------------------------
     # Timetable export
-    # ------------------------------------------------------------------
 
     def export_timetable(self, output_path: str) -> str:
         """
-        Export the best-effort timetable to an Excel file.
+        exporting the best-effort timetable to an Excel file.
 
-        Two sheets are produced:
+        two sheets are produced:
           'Timetable'   – Every event that was successfully scheduled,
                           showing its final slot and room.  Events that
                           were re-assigned by the optimiser are flagged
@@ -571,7 +587,7 @@ class TimetableCSP:
         from openpyxl.styles import PatternFill, Font, Alignment
         from openpyxl.utils import get_column_letter
 
-        # ---- Collect original timeslots from the raw events data ----
+        # Collect original timeslots from the raw events data
         raw_events = self.loader.events.copy()
         orig_slots = {}  # event_id -> (original_day, original_start)
         for _, row in raw_events.iterrows():
@@ -587,7 +603,7 @@ class TimetableCSP:
                 'weeks':      row.get('Weeks', ''),
             }
 
-        # ---- Build scheduled sheet rows ----
+        # building scheduled sheet rows
         def format_time(hour_float):
             if pd.isna(hour_float) or hour_float == '':
                 return ''
@@ -610,10 +626,10 @@ class TimetableCSP:
             new_start  = event.assigned_slot.start_hour if event.assigned_slot else ''
             new_end    = event.assigned_slot.end_hour   if event.assigned_slot else ''
 
-            # Was this event re-assigned by the optimiser?
+            # was this event re-assigned by the optimiser?
             was_moved = (orig_day != new_day or orig_start != new_start)
 
-            # Capacity violation flag
+            # capacity violation flag
             room_obj = self.rooms.get(event.assigned_room or '')
             cap_ok = (room_obj is None or event.event_size <= room_obj.capacity)
 
@@ -633,19 +649,19 @@ class TimetableCSP:
                 'Room':             event.assigned_room or '',
                 'Room Capacity':    room_obj.capacity if room_obj else '',
                 'Re-assigned':      'Yes' if was_moved else 'No',
-                'Capacity OK':      'Yes' if cap_ok else '⚠ Violation',
+                'Capacity OK':      'Yes' if cap_ok else 'Violation',
             })
 
-        # ---- Build violations sheet rows ----
+        # building violations sheet rows
         violation_rows = []
         rooms_df = self.loader.rooms.set_index('Description') if len(self.loader.rooms) else None
 
         for event in self.get_displaced_events():
             orig = orig_slots.get(event.event_id, {})
 
-            # Diagnose why it couldn't be placed
+            # diagnosing why it couldn't be placed
             reasons = []
-            # Check if any room is big enough at all
+            # check if any room is big enough at all
             big_enough = [r for r in self.rooms.values() if r.capacity >= event.event_size]
             if not big_enough:
                 reasons.append(f"No room fits event size {event.event_size}")
@@ -673,11 +689,11 @@ class TimetableCSP:
                 'Suggested Action': 'Manual scheduling required',
             })
 
-        # ---- Write to Excel ----
+        # writing to Excel
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         wb = openpyxl.Workbook()
 
-        # --- Sheet 1: Timetable ---
+        # Sheet 1: Timetable
         ws1 = wb.active
         ws1.title = 'Timetable'
 
@@ -709,7 +725,7 @@ class TimetableCSP:
             for col_idx in range(1, len(cols) + 1):
                 ws1.column_dimensions[get_column_letter(col_idx)].width = 18
 
-        # --- Sheet 2: Violations ---
+        # Sheet 2: Violations
         ws2 = wb.create_sheet('Violations')
         vio_header_fill = PatternFill('solid', fgColor='8B0000')
 
@@ -748,21 +764,21 @@ def analyze_scenario(scenario: str, export: bool = True) -> Dict:
 
     csp = TimetableCSP(scenario)
 
-    # Initial state
+    # initial state
     initial_displaced = len(csp.get_displaced_events())
     initial_scheduled = len(csp.get_scheduled_events())
 
-    # Check constraints before optimization
+    # check constraints before optimization
     csp.check_hard_constraints()
 
-    # Try to reschedule displaced events
+    # try to reschedule displaced events
     greedy_scheduled = csp.greedy_reschedule()
     sa_scheduled = csp.simulated_annealing()
 
-    # Final check
+    # final check
     final_result = csp.check_hard_constraints()
 
-    # Export timetable (always — best effort)
+    # exporting timetable (always - best effort)
     export_path = None
     if export:
         from pathlib import Path

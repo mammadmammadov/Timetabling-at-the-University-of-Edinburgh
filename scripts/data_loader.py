@@ -2,16 +2,14 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import Dict, Tuple, Optional
-from functools import lru_cache
 import re
 
-# Project paths
 PROJECT_ROOT = Path(__file__).parent.parent
 DATA_RAW = PROJECT_ROOT / "data" / "raw"
 
 
 class TimetableDataLoader:
-    """Loads and processes all timetabling data files."""
+    """loading and processing timetabling data files."""
     
     def __init__(self):
         self._events_df: Optional[pd.DataFrame] = None
@@ -22,27 +20,26 @@ class TimetableDataLoader:
     
     @property
     def events(self) -> pd.DataFrame:
-        """Load and cache events data with parsed timeslots."""
+        """loading and caching events data with parsed timeslots."""
         if self._events_df is None:
             self._events_df = self._load_events()
         return self._events_df
     
     @property
     def rooms(self) -> pd.DataFrame:
-        """Load and cache rooms data."""
+        """loading and caching rooms data."""
         if self._rooms_df is None:
             df = pd.read_excel(DATA_RAW / "Rooms_and_Room_Types.xlsx")
-            # Standardize capitalisation of campus names (e.g. Bioquarter -> BioQuarter)
             if 'Campus' in df.columns:
                 df['Campus'] = df['Campus'].str.title()
-                # Special cases if necessary
+                # special cases 
                 df['Campus'] = df['Campus'].replace('Bioquarter', 'BioQuarter')
             self._rooms_df = df
         return self._rooms_df
     
     @property
     def student_events(self) -> pd.DataFrame:
-        """Load and cache student-event mappings."""
+        """loading and caching student-event mappings."""
         if self._student_events_df is None:
             self._student_events_df = pd.read_excel(
                 DATA_RAW / "2024-5_Student_Programme_Module_Event.xlsx"
@@ -51,20 +48,20 @@ class TimetableDataLoader:
     
     @property
     def dpt_data(self) -> pd.DataFrame:
-        """Load and cache DPT programme data."""
+        """loading and caching DPT programme data."""
         if self._dpt_df is None:
             self._dpt_df = pd.read_excel(DATA_RAW / "2024-5_DPT_Data.xlsx")
         return self._dpt_df
     
     @property
     def programme_courses(self) -> pd.DataFrame:
-        """Load and cache programme-course mappings."""
+        """loading and caching programme-course mappings."""
         if self._programme_course_df is None:
             self._programme_course_df = pd.read_excel(DATA_RAW / "Programme-Course.xlsx")
         return self._programme_course_df
     
     def _load_events(self) -> pd.DataFrame:
-        """Load events and parse timeslot information."""
+        """loading and parsing events and timeslot information."""
         df = pd.read_excel(DATA_RAW / "2024-5_Event_Module_Room.xlsx")
         
         # Parse timeslots into day and hour components
@@ -84,7 +81,7 @@ class TimetableDataLoader:
         return df
     
     def _parse_timeslots(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Parse 'Timeslot' column into 'Day' and 'Start Hour' columns."""
+        """parsing 'Timeslot' column into 'Day' and 'Start Hour' columns."""
         
         def parse_slot(slot: str) -> Tuple[Optional[str], Optional[int]]:
             if pd.isna(slot):
@@ -113,13 +110,13 @@ class TimetableDataLoader:
         return df
     
     def get_events_in_timeslot(self, day: str, hour: int) -> pd.DataFrame:
-        """Get all events scheduled at a specific day and hour."""
+        """getting all events scheduled at a specific day and hour."""
         events = self.events
         mask = (events['Day'] == day) & (events['Start Hour'] <= hour) & (events['End Hour'] > hour)
         return events[mask]
     
     def get_room_capacity(self, room_name: str) -> Optional[int]:
-        """Get capacity for a specific room."""
+        """getting capacity for a specific room."""
         rooms = self.rooms
         match = rooms[rooms['Description'] == room_name]
         if len(match) > 0:
@@ -127,18 +124,18 @@ class TimetableDataLoader:
         return None
     
     def get_student_events_by_student(self, student_id: str) -> pd.DataFrame:
-        """Get all events for a specific student."""
+        """getting all events for a specific student."""
         return self.student_events[self.student_events['AnonID'] == student_id]
     
     def get_unique_students(self) -> np.ndarray:
-        """Get array of unique student IDs."""
+        """getting array of unique student IDs."""
         return self.student_events['AnonID'].unique()
     
     def get_events_by_scenario(self, scenario: str) -> Dict[str, pd.DataFrame]:
         """
-        Split events into 'within_bounds' and 'displaced' based on scenario.
+        splitting events into 'within_bounds' and 'displaced' based on scenario.
         
-        Scenarios:
+        scenarios:
         - 'baseline': Mon-Fri 9am-6pm
         - 'scenario_a': Mon-Fri 9am-5pm
         - 'scenario_b': Mon-Thu 9am-6pm, Fri 9am-12pm
@@ -175,7 +172,7 @@ class TimetableDataLoader:
 
 
 def get_data_summary() -> Dict:
-    """Get summary statistics for all data files."""
+    """getting summary statistics for all data files."""
     loader = TimetableDataLoader()
     
     summary = {
@@ -199,12 +196,12 @@ def get_data_summary() -> Dict:
 
 
 if __name__ == "__main__":
-    print("Loading data...")
+    print("loading data...")
     loader = TimetableDataLoader()
     
-    print(f"\nEvents: {len(loader.events):,} records")
-    print(f"Rooms: {len(loader.rooms):,} records")
-    print(f"Student-Events: {len(loader.student_events):,} records")
+    print(f"\nevents: {len(loader.events):,} records")
+    print(f"rooms: {len(loader.rooms):,} records")
+    print(f"student-events: {len(loader.student_events):,} records")
     
     print("\nSample parsed timeslots:")
     print(loader.events[['Timeslot', 'Day', 'Start Hour', 'End Hour', 'Duration (minutes)']].head(10))
