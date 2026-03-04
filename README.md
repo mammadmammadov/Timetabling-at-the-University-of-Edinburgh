@@ -29,7 +29,7 @@ python scripts/csp_analyzer.py
 ## Generated Datasets (Already Completed)
 **Note:** You do not actually need to run the python command above if you just want to see the results.
 
-The AI optimizer has *already* been run on the current datasets. The fully optimized timetable configurations are pre-generated and sitting in the `outputs/` folder:
+The optimizer (implementing greedy rescheduling and simulated annealing, which are popular algorithms in the domain of AI) has *already* been run on the current datasets. The fully optimized timetable configurations are pre-generated and sitting in the `outputs/` folder:
 - `outputs/timetable_baseline.xlsx` (The optimized Baseline scenario)
 - `outputs/timetable_scenario_a.xlsx` (The optimized Scenario A scenario, this one is still in progress)
 
