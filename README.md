@@ -18,7 +18,7 @@ Make sure you have the required Python packages installed to handle the dataset 
 pip install -r requirements.txt
 ```
 
-### 3. Running the AI Optimizer
+### 3. Running the Optimizer
 The core optimizer is located in `scripts/csp_analyzer.py`. Running this script will automatically ingest the raw datasets, apply hard and soft constraints, run the Simulated Annealing logic and generate new Excel spreadsheets with the optimized schedule.
 
 To run it yourself:
