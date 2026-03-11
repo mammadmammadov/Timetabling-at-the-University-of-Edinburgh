@@ -1,4 +1,4 @@
-DOUBLE_BOOKING_THRESHOLD_PCT: float = 15.0  # % of room-slot combinations that may be double-booked
+DOUBLE_BOOKING_THRESHOLD_PCT: float = 13.06  # matches the raw dataset's actual double-booking rate
 
 import pandas as pd
 from typing import Dict, List, Tuple, Optional, Set

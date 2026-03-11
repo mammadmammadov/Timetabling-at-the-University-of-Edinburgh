@@ -1,0 +1,57 @@
+
+============================================================
+Scenario: RAW
+============================================================
+
+Tier 1 - Feasibility:
+  Compulsory clashes: 187
+  Capacity violations: 2306
+  Unscheduled events: 0
+  Is Feasible: False
+
+Tier 2 - Student Experience:
+  Lunch break (12-2pm): 7.0%
+  Avg daily span: 4.94 hours
+
+Tier 3 - Efficiency:
+  Avg room utilization: 4.9%
+  Peak utilization: 47.6%
+  Room hours used: 5364/109032
+
+============================================================
+Scenario: BASELINE
+============================================================
+
+Tier 1 - Feasibility:
+  Compulsory clashes: 184
+  Capacity violations: 2284
+  Unscheduled events: 2
+  Is Feasible: False
+
+Tier 2 - Student Experience:
+  Lunch break (12-2pm): 7.4%
+  Avg daily span: 4.83 hours
+
+Tier 3 - Efficiency:
+  Avg room utilization: 17.4%
+  Peak utilization: 46.5%
+  Room hours used: 5091/29205
+
+============================================================
+Scenario: SCENARIO_A
+============================================================
+
+Tier 1 - Feasibility:
+  Compulsory clashes: 183
+  Capacity violations: 2183
+  Unscheduled events: 5
+  Is Feasible: False
+
+Tier 2 - Student Experience:
+  Lunch break (12-2pm): 7.1%
+  Avg daily span: 4.61 hours
+
+Tier 3 - Efficiency:
+  Avg room utilization: 18.7%
+  Peak utilization: 70.0%
+  Room hours used: 4848/25960

@@ -54,8 +54,11 @@ class KPICalculator:
         if self._events is None:
             df = self.loader.events.copy()
             
+            # Raw scenario: use original data as-is, no optimization
+            if self.scenario == 'raw':
+                pass  # Keep df exactly as loaded from the raw Excel
             # If we have CSP results, update the dataframe's time and room columns
-            if self.csp is not None:
+            elif self.csp is not None:
                 for idx, row in df.iterrows():
                     event_id = str(row['Event ID'])
                     # Check scheduled events
@@ -79,9 +82,30 @@ class KPICalculator:
                 if output_file.exists():
                     try:
                         # Load the generated timetable
-                        scheduled_df = pd.read_excel(output_file, sheet_name='Scheduled')
+                        scheduled_df = pd.read_excel(output_file, sheet_name='Timetable')
                         scheduled_df['Event ID'] = scheduled_df['Event ID'].astype(str)
-                        scheduled_map = scheduled_df.set_index('Event ID')[['Day', 'Start Hour', 'End Hour', 'Room']].to_dict('index')
+
+                        def parse_time_str(t):
+                            """Convert 'HH:MM' string back to float hour."""
+                            try:
+                                parts = str(t).split(':')
+                                return int(parts[0]) + int(parts[1]) / 60
+                            except Exception:
+                                return np.nan
+
+                        scheduled_map = {}
+                        for _, srow in scheduled_df.iterrows():
+                            eid = str(srow['Event ID'])
+                            new_day = srow.get('New Day')
+                            new_start = parse_time_str(srow.get('New Start'))
+                            new_end = parse_time_str(srow.get('New End'))
+                            new_room = srow.get('Room')
+                            scheduled_map[eid] = {
+                                'Day': new_day,
+                                'Start Hour': new_start,
+                                'End Hour': new_end,
+                                'Room': new_room
+                            }
                         
                         for idx, row in df.iterrows():
                             event_id = str(row['Event ID'])
@@ -92,7 +116,7 @@ class KPICalculator:
                                 df.at[idx, 'End Hour'] = new_data['End Hour']
                                 df.at[idx, 'Room'] = new_data['Room']
                             else:
-                                # Not in scheduled sheet = unscheduled
+                                # Not in timetable sheet = unscheduled
                                 df.at[idx, 'Day'] = np.nan
                                 df.at[idx, 'Start Hour'] = np.nan
                                 df.at[idx, 'End Hour'] = np.nan
@@ -106,8 +130,12 @@ class KPICalculator:
     def get_scenario_hours(self) -> Dict[str, List[int]]:
         """Get available hours per day for the scenario."""
         days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+        all_days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
         
-        if self.scenario == 'baseline':
+        if self.scenario == 'raw':
+            # Raw: include all days and all hours (no restrictions)
+            return {day: list(range(0, 24)) for day in all_days}
+        elif self.scenario == 'baseline':
             return {day: list(range(9, 18)) for day in days}
         elif self.scenario == 'scenario_a':
             return {day: list(range(9, 17)) for day in days}
@@ -122,7 +150,7 @@ class KPICalculator:
         unscheduled = 0
         capacity_violations = 0
         
-        rooms_df = self.loader.rooms.set_index('Description')
+        rooms_df = self.loader.rooms.set_index('Id')
         
         for _, event in events.iterrows():
             day = event.get('Day')
@@ -386,7 +414,7 @@ class KPICalculator:
 
 
 if __name__ == "__main__":
-    for scenario in ['baseline', 'scenario_a', 'scenario_b']:
+    for scenario in ['raw', 'baseline', 'scenario_a']:
         print(f"\n{'='*60}")
         print(f"Scenario: {scenario.upper()}")
         print('='*60)

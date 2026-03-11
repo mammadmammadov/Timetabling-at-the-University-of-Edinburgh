@@ -53,77 +53,24 @@ class CompulsoryClashDetector:
     def get_compulsory_courses_by_programme(self) -> Dict[str, Set[str]]:
         """Get compulsory courses for each programme-year combination.
         
-        CRITICAL: Filters out courses that have NO actual student enrollments 
-        for that programme-year, even if listed as compulsory in DPT.
+        Uses the DPT (Degree Programme Table) data directly to identify
+        all compulsory courses per programme-year.
         """
         if self._compulsory_by_programme is not None:
             return self._compulsory_by_programme
         
-        # 1. Get theoretical compulsory courses from DPT
         dpt = self.dpt_data
         compulsory = dpt[dpt['Compulsory/Optional'] == 'Compulsory']
         
         theoretical_map = defaultdict(set)
         for _, row in compulsory.iterrows():
             prog_code = row['Programme Code']
-            # Handle different column names for Year
             prog_year = row.get('Programme Year', row.get('ProgYear', ''))
-            
-            # Construct key matching student data format: CODE_YEAR
             key = f"{prog_code}_{prog_year}"
             course = row['Course Code']
             theoretical_map[key].add(course)
-            
-        # 2. Get actual enrollments from Student Data
-        student_events = self.loader.student_events
         
-        # Check if we have the right columns
-        if 'Programme Code-Year' not in student_events.columns or 'Course ID' not in student_events.columns:
-            print("Warning: Missing columns in student data. Using DPT only.")
-            self._compulsory_by_programme = dict(theoretical_map)
-            return self._compulsory_by_programme
-            
-        # Get set of (Programme_Year, Course) that actually exist
-        # We use a set lookup for O(1) access
-        valid_pairs = set()
-        
-        # Group by Programme-Year to avoid massive unique check on whole DF
-        # This is more efficient: get unique courses per programme-year
-        existing_enrollments = student_events[['Programme Code-Year', 'Course ID']].drop_duplicates()
-        
-        for _, row in existing_enrollments.iterrows():
-            p_key = str(row['Programme Code-Year']).strip()
-            # Course ID might be full module code, extract base if needed, 
-            # but DPT usually has base. Let's assume Course ID in student data matches DPT Course Code 
-            # or starts with it. DPT: CMSE11509. Student: CMSE11509...
-            c_id = str(row['Course ID'])
-            valid_pairs.add((p_key, c_id))
-            
-        # 3. Intersect
-        self._compulsory_by_programme = {}
-        
-        for key, courses in theoretical_map.items():
-            active_courses = set()
-            for course in courses:
-                # Check if this course (or a variant of it) exists in valid_pairs for this key
-                # We check stricter first: exact match
-                if (key, course) in valid_pairs:
-                    active_courses.add(course)
-                else:
-                    # Loose check: verify if any course in valid_pairs for this key starts with the DPT course code
-                    # (Optimized: we could pre-filter valid_pairs by key, but let's do a generator check here)
-                    # This is O(N_enrolled_in_prog)
-                    has_enrollment = any(
-                        vp_course.startswith(course) 
-                        for vp_key, vp_course in valid_pairs 
-                        if vp_key == key
-                    )
-                    if has_enrollment:
-                        active_courses.add(course)
-                        
-            if active_courses:
-                self._compulsory_by_programme[key] = active_courses
-        
+        self._compulsory_by_programme = dict(theoretical_map)
         return self._compulsory_by_programme
     
     def get_whole_class_events(self) -> pd.DataFrame:
@@ -132,15 +79,44 @@ class CompulsoryClashDetector:
         
         # Filter to whole-class events OR lectures specifically
         whole_class_mask = (events['WholeClass'] == True) | (events['Event Type'] == 'Lecture')
-        wc_events = events[whole_class_mask].copy()
+        
+        # Exclude online events and placements where no physical room is required
+        online_mask = events['Online Delivery'].notna() | (events['Room Type 1'] == 'No room required')
+        
+        wc_events = events[whole_class_mask & ~online_mask].copy()
         
         # Extract base course code
         wc_events['Course Code'] = wc_events['Module Code'].apply(self._extract_course_code)
         
         return wc_events
     
+    def _parse_weeks(self, weeks_str: str) -> Set[int]:
+        """Parse week string (e.g. '1-5, 7') into a set of integers."""
+        if pd.isna(weeks_str) or str(weeks_str).strip() == '':
+            return {1} # Default fallback
+        weeks = set()
+        parts = str(weeks_str).split(',')
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            if '-' in part:
+                try:
+                    s, e = part.split('-')
+                    weeks.update(range(int(s), int(e) + 1))
+                except ValueError:
+                    pass
+            else:
+                try:
+                    weeks.add(int(part))
+                except ValueError:
+                    pass
+        if not weeks:
+            return {1}
+        return weeks
+
     def _events_overlap(self, evt1: pd.Series, evt2: pd.Series) -> bool:
-        """Check if two events overlap in time."""
+        """Check if two events overlap in time and week."""
         if evt1['Day'] != evt2['Day']:
             return False
         if pd.isna(evt1['Start Hour']) or pd.isna(evt2['Start Hour']):
@@ -150,7 +126,14 @@ class CompulsoryClashDetector:
         start1, end1 = evt1['Start Hour'], evt1['End Hour']
         start2, end2 = evt2['Start Hour'], evt2['End Hour']
         
-        return not (end1 <= start2 or start1 >= end2)
+        if end1 <= start2 or start1 >= end2:
+            return False
+            
+        # Check week overlap
+        weeks1 = self._parse_weeks(evt1.get('Weeks', ''))
+        weeks2 = self._parse_weeks(evt2.get('Weeks', ''))
+        
+        return not weeks1.isdisjoint(weeks2)
     
     def _is_event_in_scenario(self, event: pd.Series) -> bool:
         """Check if event is within scenario time bounds."""
@@ -160,6 +143,10 @@ class CompulsoryClashDetector:
         
         if pd.isna(day) or pd.isna(start_hour):
             return False
+        
+        # Raw scenario: accept all events with valid time data
+        if self.scenario == 'raw':
+            return True
         
         if day in ['Saturday', 'Sunday']:
             return False
@@ -215,14 +202,12 @@ class CompulsoryClashDetector:
                         total_clash_pairs += 1
                         total_clash_instances += clash_count
                         
-                        # Store details (limit to avoid memory issues)
-                        if len(clash_details) < 100:
-                            clash_details.append({
-                                'programme': prog_key,
-                                'course1': course1,
-                                'course2': course2,
-                                'clash_count': clash_count
-                            })
+                        clash_details.append({
+                            'programme': prog_key,
+                            'course1': course1,
+                            'course2': course2,
+                            'clash_count': clash_count
+                        })
             
             if prog_has_clash:
                 programmes_with_clashes += 1
