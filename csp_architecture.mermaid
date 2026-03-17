@@ -4,7 +4,7 @@ graph TB
         INIT_SP[" "]:::hidden
         INIT_SP --> SLOTS
         INIT_SP --> CAMPUS
-        SLOTS["📐 <b>_init_available_slots()</b><br/>─────────────<br/>Generates TimeSlot objects per scenario<br/>baseline: Mon-Fri 9am-6pm<br/>scenario_a: Mon-Fri 9am-5pm"]
+        SLOTS["📐 <b>_init_available_slots()</b><br/>─────────────<br/>Generates TimeSlot objects per scenario<br/>baseline: Mon-Fri 9am-6pm<br/>scenario_a: Mon-Fri 9am-5pm<br/>scenario_b: Mon-Thu 9am-6pm, Fri 9am-12pm"]
         CAMPUS["🏛 <b>_load_campus_constraints()</b><br/>─────────────<br/>Reads Room Constraints sheet<br/>Parses per-campus teaching hours<br/>e.g. BioQuarter: 9am-1pm Fridays"]
         ROOMS["🚪 <b>_init_rooms()</b><br/>─────────────<br/>Room: capacity, type, building, campus<br/>Keyed by room description name"]
         EVENTS["📅 <b>_init_events()</b><br/>─────────────<br/>Parses weeks 1-5, 7-10 into sets<br/>Detects existing double-bookings<br/>Builds allowed_double_bookings map<br/>Assigns slots if within bounds<br/>Unassigned events enter displaced pool"]

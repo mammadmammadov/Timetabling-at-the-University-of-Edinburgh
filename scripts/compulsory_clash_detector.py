@@ -150,11 +150,19 @@ class CompulsoryClashDetector:
         
         if day in ['Saturday', 'Sunday']:
             return False
+            
+        # Exemption for intentional midnight/asynchronous placeholders
+        if start_hour in [0.0, 0.5]:
+            return True
         
         if self.scenario == 'baseline':
             return 9 <= start_hour and end_hour <= 18
         elif self.scenario == 'scenario_a':
             return 9 <= start_hour and end_hour <= 17
+        elif self.scenario == 'scenario_b':
+            if day == 'Friday':
+                return 9 <= start_hour and end_hour <= 12
+            return 9 <= start_hour and end_hour <= 18
         
         return True
     

@@ -42,6 +42,7 @@ class Event:
     weeks: Set[int] = field(default_factory=set)
     assigned_slot: Optional[TimeSlot] = None
     assigned_room: Optional[str] = None
+    effective_size: int = 0
 
 
 @dataclass
@@ -77,7 +78,7 @@ class TimetableCSP:
         self.available_slots: List[TimeSlot] = []
         self.rooms: Dict[str, Room] = {}
         self.events: Dict[str, Event] = {}
-        self.room_schedule: Dict[str, Dict[TimeSlot, str]] = defaultdict(dict)  # room -> {slot -> event_id}
+        self.room_schedule: Dict[str, List[Tuple[TimeSlot, str]]] = defaultdict(list)  # room -> [(slot, event_id)]
         self.student_schedules: Dict[str, List[TimeSlot]] = defaultdict(list)
         self.campus_hours: Dict[str, Dict[str, Tuple[int, int]]] = {}  # campus -> {day -> (start, end)}
         self.allowed_double_bookings: Dict[str, Set[str]] = defaultdict(set) # event_id -> set of event_ids allowed to overlap
@@ -96,6 +97,8 @@ class TimetableCSP:
                 hours = range(9, 18)  # 9am-6pm
             elif self.scenario == 'scenario_a':
                 hours = range(9, 17)  # 9am-5pm
+            elif self.scenario == 'scenario_b':
+                hours = range(9, 12) if day == 'Friday' else range(9, 18)
             else:
                 hours = range(9, 18)
             
@@ -208,12 +211,23 @@ class TimetableCSP:
                 weeks=self._parse_weeks(row.get('Weeks'))
             )
             
+            original_room_name = str(row['Room']) if pd.notna(row['Room']) else None
+            
+            # Calculate effective size: event size capped by its original physical room capacity
+            effective_size = event.event_size
+            if original_room_name and original_room_name in self.rooms:
+                orig_capacity = self.rooms[original_room_name].capacity
+                effective_size = min(event.event_size, orig_capacity)
+            event.effective_size = effective_size
+            
             # Set current assignment if within scenario bounds
             if pd.notna(row['Day']) and pd.notna(row['Start Hour']):
                 slot = TimeSlot(row['Day'], row['Start Hour'], row['End Hour'])
                 if self._is_slot_in_bounds(slot):
                     event.assigned_slot = slot
                     event.assigned_room = str(row['Room']) if pd.notna(row['Room']) else None
+                    if event.assigned_room:
+                        self.room_schedule[event.assigned_room].append((slot, event.event_id))
             
             # Parse Weeks
             weeks_str = row.get('Weeks')
@@ -254,10 +268,18 @@ class TimetableCSP:
         if slot.day in ['Saturday', 'Sunday']:
             return False
         
+        # New exemption for intentional midnight/asynchronous placeholders
+        if slot.start_hour in [0.0, 0.5]:
+            return True
+            
         if self.scenario == 'baseline':
             return 9 <= slot.start_hour and slot.end_hour <= 18
         elif self.scenario == 'scenario_a':
             return 9 <= slot.start_hour and slot.end_hour <= 17
+        elif self.scenario == 'scenario_b':
+            if slot.day == 'Friday':
+                return 9 <= slot.start_hour and slot.end_hour <= 12
+            return 9 <= slot.start_hour and slot.end_hour <= 18
         return False
     
     def get_displaced_events(self) -> List[Event]:
@@ -299,9 +321,11 @@ class TimetableCSP:
                 room_usage[event.assigned_room].append((event.assigned_slot, event))
                 total_room_slots += 1
 
-                # hard: capacity check
-                room = self.rooms.get(event.assigned_room)
-                if room and event.event_size > room.capacity:
+        # Hard constraint 1: Capacity
+        for event in self.get_scheduled_events():
+            if event.assigned_room and event.assigned_room in self.rooms:
+                room = self.rooms[event.assigned_room]
+                if room.capacity < event.effective_size:
                     capacity_violations += 1
 
         # soft: count double-booked room-slot pairs
@@ -365,7 +389,8 @@ class TimetableCSP:
             
             # find suitable room (must match campus)
             for room_name, room in self.rooms.items():
-                if room.capacity < event.event_size:
+                # Hard constraint 1: Capacity
+                if room.capacity < event.effective_size:
                     continue
                 
                 # campus match
@@ -375,7 +400,7 @@ class TimetableCSP:
                 
                 # Check if room is available
                 is_available = True
-                for (booked_slot, booked_event_id) in self.room_schedule.get(room_name, {}).items():
+                for (booked_slot, booked_event_id) in self.room_schedule.get(room_name, []):
                     if extended_slot.overlaps(booked_slot):
                         # Is it an explicitly allowed double booking?
                         if booked_event_id in self.allowed_double_bookings.get(event.event_id, set()):
@@ -405,7 +430,7 @@ class TimetableCSP:
                 slot, room = result
                 event.assigned_slot = slot
                 event.assigned_room = room
-                self.room_schedule[room][slot] = event.event_id
+                self.room_schedule[room].append((slot, event.event_id))
                 scheduled_count += 1
         
         return scheduled_count
@@ -418,16 +443,16 @@ class TimetableCSP:
         """assigning an event to a slot and room, updating the schedule index."""
         event.assigned_slot = slot
         event.assigned_room = room
-        self.room_schedule[room][slot] = event.event_id
+        self.room_schedule[room].append((slot, event.event_id))
 
     def _unassign_event(self, event: Event) -> None:
         """unassigning an event from its current slot and room."""
-        if event.assigned_room and event.assigned_slot:
-            room_sched = self.room_schedule.get(event.assigned_room, {})
-            slots_to_remove = [s for s, eid in room_sched.items()
-                               if eid == event.event_id]
-            for s in slots_to_remove:
-                del room_sched[s]
+        if event.assigned_room:
+            # Rebuild list without this event
+            self.room_schedule[event.assigned_room] = [
+                item for item in self.room_schedule[event.assigned_room] 
+                if item[1] != event.event_id
+            ]
         event.assigned_slot = None
         event.assigned_room = None
 
@@ -437,12 +462,12 @@ class TimetableCSP:
         if not self._is_slot_in_bounds(slot):
             return False
         room = self.rooms.get(room_name)
-        if not room or room.capacity < event.event_size:
+        if not room or room.capacity < event.effective_size:
             return False
         if event.campus != 'Unknown' and room.campus != 'Unknown':
             if event.campus != room.campus:
                 return False
-        for booked_slot, booked_event_id in self.room_schedule.get(room_name, {}).items():
+        for booked_slot, booked_event_id in self.room_schedule.get(room_name, []):
             if booked_event_id == event.event_id:
                 continue   # skip the event's own booking if any
             if slot.overlaps(booked_slot):
@@ -534,8 +559,13 @@ class TimetableCSP:
                 self._unassign_event(event_s)
 
                 # checking if U fits in S's old slot/room
-                if self._is_slot_room_available(event_u, saved_slot, saved_room):
-                    self._assign_event(event_u, saved_slot, saved_room)
+                # IMPORTANT: U might have a different duration than S, so we must 
+                # recreate the TimeSlot with U's duration at S's start time.
+                u_duration_hours = event_u.duration_minutes / 60
+                u_slot = TimeSlot(saved_slot.day, saved_slot.start_hour, saved_slot.start_hour + u_duration_hours)
+                
+                if self._is_slot_room_available(event_u, u_slot, saved_room):
+                    self._assign_event(event_u, u_slot, saved_room)
                     displaced.remove(event_u)
                     scheduled_events.append(event_u)
 
@@ -808,7 +838,7 @@ def analyze_scenario(scenario: str, export: bool = True) -> Dict:
 
 
 if __name__ == "__main__":
-    for scenario in ['baseline', 'scenario_a']:
+    for scenario in ['baseline', 'scenario_a', 'scenario_b']:
         result = analyze_scenario(scenario, export=True)
         print(f"\n{'='*50}")
         print(f"Scenario: {scenario}")

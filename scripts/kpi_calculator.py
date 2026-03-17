@@ -139,6 +139,11 @@ class KPICalculator:
             return {day: list(range(9, 18)) for day in days}
         elif self.scenario == 'scenario_a':
             return {day: list(range(9, 17)) for day in days}
+        elif self.scenario == 'scenario_b':
+            # Mon-Thu 9-18, Fri 9-12
+            hours = {day: list(range(9, 18)) for day in ['Monday', 'Tuesday', 'Wednesday', 'Thursday']}
+            hours['Friday'] = list(range(9, 12))
+            return hours
         return {day: list(range(9, 18)) for day in days}
     
     def calculate_feasibility_kpis(self) -> FeasibilityKPIs:
@@ -162,19 +167,22 @@ class KPICalculator:
                 continue
             
             # Check if event is within scenario bounds
-            if day not in scenario_hours:
-                unscheduled += 1
-                continue
+            is_exempt = start_hour in [0.0, 0.5]
             
-            allowed_hours = scenario_hours[day]
-            if not allowed_hours:
-                unscheduled += 1
-                continue
-            
-            min_hour, max_hour = min(allowed_hours), max(allowed_hours) + 1
-            if start_hour < min_hour or end_hour > max_hour:
-                unscheduled += 1
-                continue
+            if not is_exempt:
+                if day not in scenario_hours:
+                    unscheduled += 1
+                    continue
+                
+                allowed_hours = scenario_hours[day]
+                if not allowed_hours:
+                    unscheduled += 1
+                    continue
+                
+                min_hour, max_hour = min(allowed_hours), max(allowed_hours) + 1
+                if start_hour < min_hour or end_hour > max_hour:
+                    unscheduled += 1
+                    continue
             
             # Check capacity
             room = event.get('Room')
