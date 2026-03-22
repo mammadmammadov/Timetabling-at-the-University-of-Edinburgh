@@ -223,7 +223,13 @@ class TimetableCSP:
             # Set current assignment if within scenario bounds
             if pd.notna(row['Day']) and pd.notna(row['Start Hour']):
                 slot = TimeSlot(row['Day'], row['Start Hour'], row['End Hour'])
-                if self._is_slot_in_bounds(slot):
+                
+                # Events that don't need a physical room are always kept in place
+                room_type = str(row.get('Room Type 1', '')) if pd.notna(row.get('Room Type 1')) else ''
+                online_val = row.get('Online Delivery')
+                no_room_needed = (room_type == 'No room required') or (pd.notna(online_val) and bool(online_val))
+                
+                if no_room_needed or self._is_slot_in_bounds(slot):
                     event.assigned_slot = slot
                     event.assigned_room = str(row['Room']) if pd.notna(row['Room']) else None
                     if event.assigned_room:
@@ -265,8 +271,9 @@ class TimetableCSP:
     
     def _is_slot_in_bounds(self, slot: TimeSlot) -> bool:
         """checking if a timeslot is within scenario bounds."""
+        # Weekend events are intentional — leave them untouched
         if slot.day in ['Saturday', 'Sunday']:
-            return False
+            return True
         
         # New exemption for intentional midnight/asynchronous placeholders
         if slot.start_hour in [0.0, 0.5]:
@@ -844,11 +851,7 @@ if __name__ == "__main__":
         print(f"Scenario: {scenario}")
         print(f"Initial: {result['initial_scheduled']} scheduled, {result['initial_displaced']} displaced")
         print(f"After optimization: {result['final_scheduled']} scheduled, {result['final_unscheduled']} unscheduled")
-        print(f"Feasible (hard constraints only): {result['is_feasible']}")
         if result['binding_constraints']:
             print(f"Hard constraint violations: {result['binding_constraints']}")
-        print(f"Double-booking rate: {result['double_booking_rate']:.1f}% (threshold: {result['double_booking_threshold']}%)")
-        if result['soft_warnings']:
-            print(f"Soft warnings: {result['soft_warnings']}")
         if result['export_path']:
             print(f"Timetable saved: {result['export_path']}")
