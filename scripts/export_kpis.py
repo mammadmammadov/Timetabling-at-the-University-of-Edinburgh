@@ -8,7 +8,7 @@ output_path = Path('outputs/kpi_results.txt')
 output_path.parent.mkdir(exist_ok=True)
 
 with open(output_path, 'w') as f:
-    for scenario in ['raw', 'baseline', 'scenario_a']:
+    for scenario in ['raw', 'baseline', 'scenario_a', 'scenario_b']:
         f.write(f"\n{'='*60}\n")
         f.write(f"Scenario: {scenario.upper()}\n")
         f.write(f"{'='*60}\n")

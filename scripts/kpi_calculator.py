@@ -136,15 +136,20 @@ class KPICalculator:
             # Raw: include all days and all hours (no restrictions)
             return {day: list(range(0, 24)) for day in all_days}
         elif self.scenario == 'baseline':
-            return {day: list(range(9, 18)) for day in days}
+            hours = {day: list(range(9, 18)) for day in days}
         elif self.scenario == 'scenario_a':
-            return {day: list(range(9, 17)) for day in days}
+            hours = {day: list(range(9, 17)) for day in days}
         elif self.scenario == 'scenario_b':
             # Mon-Thu 9-18, Fri 9-12
             hours = {day: list(range(9, 18)) for day in ['Monday', 'Tuesday', 'Wednesday', 'Thursday']}
             hours['Friday'] = list(range(9, 12))
-            return hours
-        return {day: list(range(9, 18)) for day in days}
+        else:
+            hours = {day: list(range(9, 18)) for day in days}
+        
+        # Weekend events are intentional — include Sat/Sun so they aren't flagged
+        hours['Saturday'] = list(range(0, 24))
+        hours['Sunday'] = list(range(0, 24))
+        return hours
     
     def calculate_feasibility_kpis(self) -> FeasibilityKPIs:
         """Calculate Tier 1 feasibility KPIs."""
@@ -422,7 +427,7 @@ class KPICalculator:
 
 
 if __name__ == "__main__":
-    for scenario in ['raw', 'baseline', 'scenario_a']:
+    for scenario in ['raw', 'baseline', 'scenario_a', 'scenario_b']:
         print(f"\n{'='*60}")
         print(f"Scenario: {scenario.upper()}")
         print('='*60)

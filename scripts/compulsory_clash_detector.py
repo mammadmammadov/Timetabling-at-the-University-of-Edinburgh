@@ -148,9 +148,10 @@ class CompulsoryClashDetector:
         if self.scenario == 'raw':
             return True
         
+        # Weekend events are intentional — keep them in-scope
         if day in ['Saturday', 'Sunday']:
-            return False
-            
+            return True
+        
         # Exemption for intentional midnight/asynchronous placeholders
         if start_hour in [0.0, 0.5]:
             return True

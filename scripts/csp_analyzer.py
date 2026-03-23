@@ -549,7 +549,7 @@ class TimetableCSP:
                         and evt.assigned_room
                         and evt.assigned_slot
                         and (room := self.rooms.get(evt.assigned_room)) is not None
-                        and room.capacity >= event_u.event_size
+                        and room.capacity >= event_u.effective_size
                         and (event_u.campus == 'Unknown'
                              or room.campus == 'Unknown'
                              or event_u.campus == room.campus))
