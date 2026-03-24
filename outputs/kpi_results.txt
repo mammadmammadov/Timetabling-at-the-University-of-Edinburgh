@@ -4,14 +4,15 @@ Scenario: RAW
 ============================================================
 
 Tier 1 - Feasibility:
-  Compulsory clashes: 187
+  Compulsory clashes: 0
   Capacity violations: 2306
   Unscheduled events: 0
+  Travel time violations: 0
   Is Feasible: False
 
 Tier 2 - Student Experience:
-  Lunch break (12-2pm): 7.0%
-  Avg daily span: 4.94 hours
+  Lunch break (12-2pm): 7.2%
+  Avg daily span: 4.91 hours
 
 Tier 3 - Efficiency:
   Avg room utilization: 4.9%
@@ -23,35 +24,57 @@ Scenario: BASELINE
 ============================================================
 
 Tier 1 - Feasibility:
-  Compulsory clashes: 184
-  Capacity violations: 2284
-  Unscheduled events: 2
+  Compulsory clashes: 0
+  Capacity violations: 2304
+  Unscheduled events: 219
+  Travel time violations: 0
   Is Feasible: False
 
 Tier 2 - Student Experience:
-  Lunch break (12-2pm): 7.4%
-  Avg daily span: 4.83 hours
+  Lunch break (12-2pm): 7.3%
+  Avg daily span: 4.87 hours
 
 Tier 3 - Efficiency:
-  Avg room utilization: 17.4%
-  Peak utilization: 46.5%
-  Room hours used: 5091/29205
+  Avg room utilization: 8.6%
+  Peak utilization: 46.7%
+  Room hours used: 5167/60357
 
 ============================================================
 Scenario: SCENARIO_A
 ============================================================
 
 Tier 1 - Feasibility:
-  Compulsory clashes: 183
-  Capacity violations: 2183
-  Unscheduled events: 5
+  Compulsory clashes: 0
+  Capacity violations: 2273
+  Unscheduled events: 414
+  Travel time violations: 0
   Is Feasible: False
 
 Tier 2 - Student Experience:
-  Lunch break (12-2pm): 7.1%
-  Avg daily span: 4.61 hours
+  Lunch break (12-2pm): 6.1%
+  Avg daily span: 4.67 hours
 
 Tier 3 - Efficiency:
-  Avg room utilization: 18.7%
-  Peak utilization: 70.0%
-  Room hours used: 4848/25960
+  Avg room utilization: 8.9%
+  Peak utilization: 69.8%
+  Room hours used: 5084/57112
+
+============================================================
+Scenario: SCENARIO_B
+============================================================
+
+Tier 1 - Feasibility:
+  Compulsory clashes: 0
+  Capacity violations: 2231
+  Unscheduled events: 568
+  Travel time violations: 0
+  Is Feasible: False
+
+Tier 2 - Student Experience:
+  Lunch break (12-2pm): 7.0%
+  Avg daily span: 4.85 hours
+
+Tier 3 - Efficiency:
+  Avg room utilization: 9.1%
+  Peak utilization: 84.6%
+  Room hours used: 5139/56463

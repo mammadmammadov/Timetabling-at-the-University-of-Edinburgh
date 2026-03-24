@@ -20,6 +20,7 @@ with open(output_path, 'w') as f:
         f.write(f"  Compulsory clashes: {kpis['feasibility']['compulsory_clashes']}\n")
         f.write(f"  Capacity violations: {kpis['feasibility']['capacity_violations']}\n")
         f.write(f"  Unscheduled events: {kpis['feasibility']['unscheduled_events']}\n")
+        f.write(f"  Travel time violations: {kpis['feasibility']['travel_time_violations']}\n")
         f.write(f"  Is Feasible: {kpis['feasibility']['is_feasible']}\n")
         
         f.write("\nTier 2 - Student Experience:\n")

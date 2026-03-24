@@ -17,6 +17,7 @@ class FeasibilityKPIs:
     compulsory_clashes: int
     capacity_violations: int
     unscheduled_events: int
+    travel_time_violations: int
     is_feasible: bool
 
 
@@ -174,6 +175,11 @@ class KPICalculator:
             # Check if event is within scenario bounds
             is_exempt = start_hour in [0.0, 0.5]
             
+            room_type = str(event.get('Room Type 1', '')) if pd.notna(event.get('Room Type 1')) else ''
+            online_val = event.get('Online Delivery')
+            if (room_type == 'No room required') or (pd.notna(online_val) and bool(online_val)):
+                is_exempt = True
+            
             if not is_exempt:
                 if day not in scenario_hours:
                     unscheduled += 1
@@ -191,7 +197,7 @@ class KPICalculator:
             
             # Check capacity
             room = event.get('Room')
-            event_size = event.get('Event Size', 0)
+            event_size = event.get('Effective Size', event.get('Event Size', 0))
             if pd.notna(room) and room in rooms_df.index:
                 room_capacity = rooms_df.loc[room, 'Capacity']
                 if isinstance(room_capacity, pd.Series):
@@ -200,33 +206,34 @@ class KPICalculator:
                     capacity_violations += 1
         
         # Check for compulsory clashes (students with overlapping events)
-        compulsory_clashes = self._calculate_compulsory_clashes()
+        compulsory_clashes, travel_violations = self._calculate_compulsory_clashes()
         
         is_feasible = (compulsory_clashes == 0 and 
                        capacity_violations == 0 and 
-                       unscheduled == 0)
+                       unscheduled == 0 and
+                       travel_violations == 0)
         
         return FeasibilityKPIs(
             compulsory_clashes=compulsory_clashes,
             capacity_violations=capacity_violations,
             unscheduled_events=unscheduled,
+            travel_time_violations=travel_violations,
             is_feasible=is_feasible
         )
     
-    def _calculate_compulsory_clashes(self, sample_size: int = 5000) -> int:
+    def _calculate_compulsory_clashes(self, sample_size: int = 5000) -> Tuple[int, int]:
         """Calculate compulsory clashes using DPT programme data.
         
-        A compulsory clash is when two whole-class events of compulsory courses 
-        for the same programme-year overlap in time.
+        Returns: (total_clash_pairs, total_travel_violations)
         """
         try:
             from compulsory_clash_detector import CompulsoryClashDetector
             detector = CompulsoryClashDetector(self.scenario)
             result = detector.detect_compulsory_clashes()
-            return result.total_clash_pairs  # Return course-pair clashes
+            return result.total_clash_pairs, result.total_travel_violations
         except ImportError:
             # Fallback to simple count if module not available
-            return 0
+            return 0, 0
     
     def calculate_student_experience_kpis(self, sample_size: int = 5000) -> StudentExperienceKPIs:
         """Calculate Tier 2 student experience KPIs."""
@@ -409,6 +416,7 @@ class KPICalculator:
                 'compulsory_clashes': feasibility.compulsory_clashes,
                 'capacity_violations': feasibility.capacity_violations,
                 'unscheduled_events': feasibility.unscheduled_events,
+                'travel_time_violations': feasibility.travel_time_violations,
                 'is_feasible': feasibility.is_feasible
             },
             'student_experience': {
@@ -439,7 +447,7 @@ if __name__ == "__main__":
         print(f"  Compulsory clashes: {kpis['feasibility']['compulsory_clashes']}")
         print(f"  Capacity violations: {kpis['feasibility']['capacity_violations']}")
         print(f"  Unscheduled events: {kpis['feasibility']['unscheduled_events']}")
-        print(f"  Is Feasible: {kpis['feasibility']['is_feasible']}")
+        print(f"  Travel time violations: {kpis['feasibility']['travel_time_violations']}")
         
         print("\nTier 2 - Student Experience:")
         print(f"  Lunch break (12-2pm): {kpis['student_experience']['lunch_break_percentage']}%")

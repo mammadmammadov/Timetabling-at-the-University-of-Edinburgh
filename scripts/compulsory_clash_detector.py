@@ -20,11 +20,14 @@ class CompulsoryClashResult:
     programmes_with_clashes: int
     total_clash_pairs: int  # Number of course-pair clashes
     total_clash_instances: int  # Total overlapping event instances
+    total_travel_violations: int  # Total instances where gap < travel time
     clash_details: List[Dict]  # Detailed clash info
 
 
 class CompulsoryClashDetector:
     """Detects clashes between compulsory whole-class events."""
+    
+    _whitelisted_clashes: Set[frozenset] = None
     
     def __init__(self, scenario: str = 'baseline'):
         self.scenario = scenario
@@ -32,6 +35,45 @@ class CompulsoryClashDetector:
         self._dpt_df = None
         self._compulsory_by_programme = None
         
+    @classmethod
+    def get_whitelisted_clashes(cls) -> Set[frozenset]:
+        """Returns a set of (event_id1, event_id2) frozensets that clash in the RAW data."""
+        if cls._whitelisted_clashes is not None:
+            return cls._whitelisted_clashes
+            
+        print("Building whitelist of raw compulsory clashes...")
+        # Create a temporary raw detector to find the original clashes
+        raw_detector = cls(scenario='raw')
+        
+        compulsory_by_prog = raw_detector.get_compulsory_courses_by_programme()
+        wc_events = raw_detector.get_whole_class_events()
+        
+        course_events = defaultdict(list)
+        for _, event in wc_events.iterrows():
+            course_code = event['Course Code']
+            if course_code:
+                course_events[course_code].append(event)
+                
+        whitelist = set()
+        
+        for prog_key, courses in compulsory_by_prog.items():
+            courses_list = list(courses)
+            for i, course1 in enumerate(courses_list):
+                events1 = course_events.get(course1, [])
+                for course2 in courses_list[i+1:]:
+                    events2 = course_events.get(course2, [])
+                    for evt1 in events1:
+                        for evt2 in events2:
+                            is_clash, is_travel = raw_detector._events_conflict(evt1, evt2)
+                            if is_clash or is_travel:
+                                evt1_id = str(evt1['Event ID'])
+                                evt2_id = str(evt2['Event ID'])
+                                whitelist.add(frozenset([evt1_id, evt2_id]))
+                                
+        cls._whitelisted_clashes = whitelist
+        print(f"Found {len(whitelist)} whitelisted clashing event pairs in raw data.")
+        return cls._whitelisted_clashes
+
     @property
     def dpt_data(self) -> pd.DataFrame:
         """Load DPT data with programme-course mappings."""
@@ -115,25 +157,45 @@ class CompulsoryClashDetector:
             return {1}
         return weeks
 
-    def _events_overlap(self, evt1: pd.Series, evt2: pd.Series) -> bool:
-        """Check if two events overlap in time and week."""
+    def _events_conflict(self, evt1: pd.Series, evt2: pd.Series) -> Tuple[bool, bool]:
+        """Check if two events overlap in time or violate inter-campus travel time.
+        
+        Returns: (is_time_clash, is_travel_violation)
+        """
         if evt1['Day'] != evt2['Day']:
-            return False
+            return False, False
         if pd.isna(evt1['Start Hour']) or pd.isna(evt2['Start Hour']):
-            return False
-        
-        # Check time overlap
-        start1, end1 = evt1['Start Hour'], evt1['End Hour']
-        start2, end2 = evt2['Start Hour'], evt2['End Hour']
-        
-        if end1 <= start2 or start1 >= end2:
-            return False
+            return False, False
             
         # Check week overlap
         weeks1 = self._parse_weeks(evt1.get('Weeks', ''))
         weeks2 = self._parse_weeks(evt2.get('Weeks', ''))
+        if weeks1.isdisjoint(weeks2):
+            return False, False
         
-        return not weeks1.isdisjoint(weeks2)
+        start1, end1 = evt1['Start Hour'], evt1['End Hour']
+        start2, end2 = evt2['Start Hour'], evt2['End Hour']
+        
+        # 1. Check direct time overlap
+        if end1 > start2 and start1 < end2:
+            return True, False
+            
+        # 2. Check travel time violation (no time overlap, but insufficient gap)
+        campus1 = str(evt1.get('Campus', '')).strip().title().replace('Bioquarter', 'BioQuarter')
+        campus2 = str(evt2.get('Campus', '')).strip().title().replace('Bioquarter', 'BioQuarter')
+        
+        if campus1 and campus2 and campus1 != 'Unknown' and campus2 != 'Unknown':
+            if end1 <= start2:
+                gap_hours = start2 - end1
+                mins_needed = self.loader.travel_times.get((campus1, campus2), 0)
+            else:
+                gap_hours = start1 - end2
+                mins_needed = self.loader.travel_times.get((campus2, campus1), 0)
+                
+            if (gap_hours * 60) < mins_needed:
+                return False, True
+                
+        return False, False
     
     def _is_event_in_scenario(self, event: pd.Series) -> bool:
         """Check if event is within scenario time bounds."""
@@ -186,7 +248,10 @@ class CompulsoryClashDetector:
         programmes_with_clashes = 0
         total_clash_pairs = 0
         total_clash_instances = 0
+        total_travel_violations = 0
         clash_details = []
+        
+        whitelist = self.get_whitelisted_clashes()
         
         for prog_key, courses in compulsory_by_prog.items():
             courses_list = list(courses)
@@ -201,21 +266,31 @@ class CompulsoryClashDetector:
                     
                     # Check for overlapping events
                     clash_count = 0
+                    travel_violations = 0
                     for evt1 in events1:
                         for evt2 in events2:
-                            if self._events_overlap(evt1, evt2):
+                            pair = frozenset([str(evt1['Event ID']), str(evt2['Event ID'])])
+                            if pair in whitelist:
+                                continue  # Ignore whitelisted raw clashes
+                                
+                            is_clash, is_travel = self._events_conflict(evt1, evt2)
+                            if is_clash:
                                 clash_count += 1
+                            if is_travel:
+                                travel_violations += 1
                     
-                    if clash_count > 0:
+                    if clash_count > 0 or travel_violations > 0:
                         prog_has_clash = True
                         total_clash_pairs += 1
                         total_clash_instances += clash_count
+                        total_travel_violations += travel_violations
                         
                         clash_details.append({
                             'programme': prog_key,
                             'course1': course1,
                             'course2': course2,
-                            'clash_count': clash_count
+                            'clash_count': clash_count,
+                            'travel_violations': travel_violations
                         })
             
             if prog_has_clash:
@@ -226,6 +301,7 @@ class CompulsoryClashDetector:
             programmes_with_clashes=programmes_with_clashes,
             total_clash_pairs=total_clash_pairs,
             total_clash_instances=total_clash_instances,
+            total_travel_violations=total_travel_violations,
             clash_details=clash_details
         )
 
@@ -244,6 +320,7 @@ def analyze_compulsory_clashes(scenario: str = 'baseline') -> Dict:
         'clash_rate': round(result.programmes_with_clashes / result.total_programme_years * 100, 1) if result.total_programme_years > 0 else 0,
         'total_clash_pairs': result.total_clash_pairs,
         'total_clash_instances': result.total_clash_instances,
+        'total_travel_violations': result.total_travel_violations,
         'sample_clashes': result.clash_details[:10]
     }
 
@@ -262,8 +339,10 @@ if __name__ == "__main__":
         print(f"  Programmes with clashes: {result['programmes_with_clashes']} ({result['clash_rate']}%)")
         print(f"  Total clash pairs (course combinations): {result['total_clash_pairs']}")
         print(f"  Total clash instances (event overlaps): {result['total_clash_instances']}")
+        print(f"  Total travel violations (insufficient campus gap): {result['total_travel_violations']}")
         
         if result['sample_clashes']:
-            print(f"\n  Sample clashes:")
+            print(f"\n  Sample clashes & travel violations:")
             for clash in result['sample_clashes'][:5]:
-                print(f"    - {clash['programme']}: {clash['course1']} vs {clash['course2']} ({clash['clash_count']} overlaps)")
+                print(f"    - {clash['programme']}: {clash['course1']} vs {clash['course2']} "
+                      f"({clash.get('clash_count', 0)} overlaps, {clash.get('travel_violations', 0)} travel violations)")

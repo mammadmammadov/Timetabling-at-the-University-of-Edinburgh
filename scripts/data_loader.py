@@ -17,6 +17,7 @@ class TimetableDataLoader:
         self._student_events_df: Optional[pd.DataFrame] = None
         self._dpt_df: Optional[pd.DataFrame] = None
         self._programme_course_df: Optional[pd.DataFrame] = None
+        self._travel_times: Optional[Dict[Tuple[str, str], int]] = None
     
     @property
     def events(self) -> pd.DataFrame:
@@ -60,6 +61,27 @@ class TimetableDataLoader:
             self._programme_course_df = pd.read_excel(DATA_RAW / "Programme-Course.xlsx")
         return self._programme_course_df
     
+    @property
+    def travel_times(self) -> Dict[Tuple[str, str], int]:
+        """loading and caching inter-campus travel time matrix (minutes)."""
+        if self._travel_times is None:
+            self._travel_times = {}
+            try:
+                rc = pd.read_excel(DATA_RAW / "Rooms_and_Room_Types.xlsx",
+                                   sheet_name='Room Constraints')
+                for _, row in rc.iterrows():
+                    cfrom = row.get('Campus From')
+                    cto = row.get('Campus To')
+                    mins = row.get('Travel time (mins)')
+                    if pd.notna(cfrom) and pd.notna(cto) and pd.notna(mins):
+                        # Standardise campus names (same logic as rooms/events)
+                        cfrom = str(cfrom).strip().title().replace('Bioquarter', 'BioQuarter')
+                        cto = str(cto).strip().title().replace('Bioquarter', 'BioQuarter')
+                        self._travel_times[(cfrom, cto)] = int(mins)
+            except Exception as e:
+                print(f"Warning: Could not load travel times: {e}")
+        return self._travel_times
+    
     def _load_events(self) -> pd.DataFrame:
         """loading and parsing events and timeslot information."""
         df = pd.read_excel(DATA_RAW / "2024-5_Event_Module_Room.xlsx")
@@ -77,6 +99,29 @@ class TimetableDataLoader:
         if 'Campus' in df.columns:
             df['Campus'] = df['Campus'].str.title()
             df['Campus'] = df['Campus'].replace('Bioquarter', 'BioQuarter')
+            
+        # Compute Effective Size (cap at original room capacity)
+        try:
+            rooms_df = self.rooms.set_index('Id')
+            
+            def calc_effective_size(row):
+                size = row.get('Event Size', 0)
+                if pd.isna(size):
+                    size = 0
+                
+                room = row.get('Room')
+                if pd.notna(room) and room in rooms_df.index:
+                    cap = rooms_df.loc[room, 'Capacity']
+                    if isinstance(cap, pd.Series):
+                        cap = cap.iloc[0]
+                    if pd.notna(cap):
+                        return min(size, cap)
+                return size
+                
+            df['Effective Size'] = df.apply(calc_effective_size, axis=1)
+        except Exception as e:
+            print(f"Warning: Could not compute Effective Size: {e}")
+            df['Effective Size'] = df['Event Size'].fillna(0)
         
         return df
     

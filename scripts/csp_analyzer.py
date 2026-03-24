@@ -82,11 +82,16 @@ class TimetableCSP:
         self.student_schedules: Dict[str, List[TimeSlot]] = defaultdict(list)
         self.campus_hours: Dict[str, Dict[str, Tuple[int, int]]] = {}  # campus -> {day -> (start, end)}
         self.allowed_double_bookings: Dict[str, Set[str]] = defaultdict(set) # event_id -> set of event_ids allowed to overlap
+        self.compulsory_conflicts: Dict[str, Set[str]] = defaultdict(set)  # event_id -> set of event_ids that must not overlap
+        self.travel_times: Dict[tuple, int] = {}  # (campus_from, campus_to) -> minutes
         
         self._load_campus_constraints()
         self._init_available_slots()
         self._init_rooms()
         self._init_events()
+        self._build_compulsory_conflicts()
+        self.travel_times = self.loader.travel_times
+
     
     def _init_available_slots(self):
         """Initialize available timeslots based on scenario."""
@@ -269,6 +274,77 @@ class TimetableCSP:
             
             self.events[event_id] = event
     
+    def _build_compulsory_conflicts(self):
+        """Build compulsory conflict graph from DPT data.
+        
+        For each programme-year, identify all compulsory courses and their
+        whole-class events. Events from different compulsory courses of the
+        same programme-year must not overlap (H4).
+        """
+        try:
+            from compulsory_clash_detector import CompulsoryClashDetector
+            whitelist = CompulsoryClashDetector.get_whitelisted_clashes()
+        except Exception as e:
+            print(f"Warning: Could not load whitelist: {e}")
+            whitelist = set()
+            
+        try:
+            dpt = pd.read_excel(DATA_RAW / "2024-5_DPT_Data.xlsx")
+        except Exception as e:
+            print(f"Warning: Could not load DPT data for conflict graph: {e}")
+            return
+        
+        # Step 1: Get compulsory courses per programme-year
+        compulsory = dpt[dpt['Compulsory/Optional'] == 'Compulsory']
+        prog_courses: Dict[str, Set[str]] = defaultdict(set)
+        for _, row in compulsory.iterrows():
+            prog_code = row['Programme Code']
+            prog_year = row.get('Programme Year', row.get('ProgYear', ''))
+            key = f"{prog_code}_{prog_year}"
+            course_code = str(row['Course Code'])
+            prog_courses[key].add(course_code)
+        
+        # Step 2: Map course codes to whole-class event IDs
+        events_df = self.loader.events
+        whole_class_mask = (events_df['WholeClass'] == True) | (events_df['Event Type'] == 'Lecture')
+        wc_events = events_df[whole_class_mask]
+        
+        course_event_ids: Dict[str, List[str]] = defaultdict(list)
+        for _, row in wc_events.iterrows():
+            module_code = str(row['Module Code']) if pd.notna(row['Module Code']) else ''
+            base_course = module_code.split('_')[0] if module_code else ''
+            event_id = str(row['Event ID'])
+            if base_course and event_id in self.events:
+                course_event_ids[base_course].append(event_id)
+        
+        # Step 3: Build pairwise conflicts across different compulsory courses
+        for prog_key, courses in prog_courses.items():
+            courses_list = list(courses)
+            for i, c1 in enumerate(courses_list):
+                eids1 = course_event_ids.get(c1, [])
+                for c2 in courses_list[i + 1:]:
+                    eids2 = course_event_ids.get(c2, [])
+                    # All events from c1 conflict with all events from c2
+                    for eid1 in eids1:
+                        for eid2 in eids2:
+                            if frozenset([eid1, eid2]) not in whitelist:
+                                self.compulsory_conflicts[eid1].add(eid2)
+                                self.compulsory_conflicts[eid2].add(eid1)
+    
+    def _check_compulsory_clash(self, event: Event, slot: TimeSlot) -> bool:
+        """Return True if placing event at slot would create a compulsory clash (H4)."""
+        conflict_ids = self.compulsory_conflicts.get(event.event_id, set())
+        if not conflict_ids:
+            return False
+        
+        for cid in conflict_ids:
+            conflict_evt = self.events.get(cid)
+            if conflict_evt and conflict_evt.assigned_slot:
+                if slot.overlaps(conflict_evt.assigned_slot):
+                    if not event.weeks.isdisjoint(conflict_evt.weeks):
+                        return True  # H4 violation
+        return False
+    
     def _is_slot_in_bounds(self, slot: TimeSlot) -> bool:
         """checking if a timeslot is within scenario bounds."""
         # Weekend events are intentional — leave them untouched
@@ -394,6 +470,10 @@ class TimetableCSP:
             if not self._is_slot_in_bounds(extended_slot):
                 continue
             
+            # Hard constraint 4: Compulsory clash avoidance
+            if self._check_compulsory_clash(event, extended_slot):
+                continue
+            
             # find suitable room (must match campus)
             for room_name, room in self.rooms.items():
                 # Hard constraint 1: Capacity
@@ -468,6 +548,11 @@ class TimetableCSP:
         """returning True if event can be placed in slot+room (ignores event's own booking)."""
         if not self._is_slot_in_bounds(slot):
             return False
+        
+        # Hard constraint 4: Compulsory clash avoidance
+        if self._check_compulsory_clash(event, slot):
+            return False
+            
         room = self.rooms.get(room_name)
         if not room or room.capacity < event.effective_size:
             return False
