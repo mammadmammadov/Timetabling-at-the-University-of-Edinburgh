@@ -114,7 +114,12 @@ class KPICalculator:
                                 new_data = scheduled_map[event_id]
                                 df.at[idx, 'Day'] = new_data['Day']
                                 df.at[idx, 'Start Hour'] = new_data['Start Hour']
-                                df.at[idx, 'End Hour'] = new_data['End Hour']
+                                # If 'New End' is not provided in the timetable, calculate it from duration
+                                if pd.isna(new_data['End Hour']) and pd.notna(new_data['Start Hour']):
+                                    duration_minutes = row['Duration (minutes)']
+                                    df.at[idx, 'End Hour'] = new_data['Start Hour'] + (duration_minutes / 60.0)
+                                else:
+                                    df.at[idx, 'End Hour'] = new_data['End Hour']
                                 df.at[idx, 'Room'] = new_data['Room']
                             else:
                                 # Not in timetable sheet = unscheduled
@@ -203,6 +208,9 @@ class KPICalculator:
                 if isinstance(room_capacity, pd.Series):
                     room_capacity = room_capacity.iloc[0]
                 if pd.notna(room_capacity) and event_size > room_capacity:
+                    # Debug print for first 3 violations
+                    if capacity_violations < 3:
+                        pass # print(f"DEBUG: Event {event.get('Event ID')} effective size {event_size} > room {room} capacity {room_capacity}")
                     capacity_violations += 1
         
         # Check for compulsory clashes (students with overlapping events)
