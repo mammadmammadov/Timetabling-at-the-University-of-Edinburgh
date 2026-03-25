@@ -166,7 +166,8 @@ class KPICalculator:
         unscheduled = 0
         capacity_violations = 0
         
-        rooms_df = self.loader.rooms.set_index('Id')
+        rooms_by_desc = self.loader.rooms.set_index('Description')
+        rooms_by_id = self.loader.rooms.set_index('Id')
         
         for _, event in events.iterrows():
             day = event.get('Day')
@@ -201,17 +202,20 @@ class KPICalculator:
                     continue
             
             # Check capacity
-            room = event.get('Room')
+            room = str(event.get('Room')) if pd.notna(event.get('Room')) else None
             event_size = event.get('Effective Size', event.get('Event Size', 0))
-            if pd.notna(room) and room in rooms_df.index:
-                room_capacity = rooms_df.loc[room, 'Capacity']
-                if isinstance(room_capacity, pd.Series):
-                    room_capacity = room_capacity.iloc[0]
-                if pd.notna(room_capacity) and event_size > room_capacity:
-                    # Debug print for first 3 violations
-                    if capacity_violations < 3:
-                        pass # print(f"DEBUG: Event {event.get('Event ID')} effective size {event_size} > room {room} capacity {room_capacity}")
-                    capacity_violations += 1
+            if room:
+                room_capacity = None
+                if room in rooms_by_desc.index:
+                    room_capacity = rooms_by_desc.loc[room, 'Capacity']
+                elif room in rooms_by_id.index:
+                    room_capacity = rooms_by_id.loc[room, 'Capacity']
+                
+                if room_capacity is not None:
+                    if isinstance(room_capacity, pd.Series):
+                        room_capacity = room_capacity.iloc[0]
+                    if pd.notna(room_capacity) and event_size > room_capacity:
+                        capacity_violations += 1
         
         # Check for compulsory clashes (students with overlapping events)
         compulsory_clashes, travel_violations = self._calculate_compulsory_clashes()
@@ -464,4 +468,3 @@ if __name__ == "__main__":
         print("\nTier 3 - Efficiency:")
         print(f"  Avg room utilization: {kpis['efficiency']['avg_room_utilization']}%")
         print(f"  Peak utilization: {kpis['efficiency']['peak_utilization']}%")
-        print(f"  Room hours used: {kpis['efficiency']['room_hours_used']}/{kpis['efficiency']['room_hours_available']}")

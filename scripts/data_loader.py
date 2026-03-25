@@ -86,6 +86,10 @@ class TimetableDataLoader:
         """loading and parsing events and timeslot information."""
         df = pd.read_excel(DATA_RAW / "2024-5_Event_Module_Room.xlsx")
         
+        # Drop duplicates by Event ID, keeping the last occurrence (so it mirrors csp_analyzer's dictionary insertion logic)
+        if 'Event ID' in df.columns:
+            df = df.drop_duplicates(subset=['Event ID'], keep='last').reset_index(drop=True)
+        
         # Parse timeslots into day and hour components
         df = self._parse_timeslots(df)
         

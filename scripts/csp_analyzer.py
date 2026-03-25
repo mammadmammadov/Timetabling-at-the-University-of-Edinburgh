@@ -751,15 +751,16 @@ class TimetableCSP:
             # was this event re-assigned by the optimiser?
             was_moved = (orig_day != new_day or orig_start != new_start)
 
-            # capacity violation flag
+            # capacity violation flag - checking against EFFECTIVE size, which is what the solver uses
             room_obj = self.rooms.get(event.assigned_room or '')
-            cap_ok = (room_obj is None or event.event_size <= room_obj.capacity)
+            cap_ok = (room_obj is None or event.effective_size <= room_obj.capacity)
 
             scheduled_rows.append({
                 'Event ID':         event.event_id,
                 'Module Code':      orig.get('module', ''),
                 'Event Type':       orig.get('event_type', ''),
                 'Event Size':       event.event_size,
+                'Effective Size':   event.effective_size,
                 'Duration (min)':   orig.get('duration', event.duration_minutes),
                 'Campus':           orig.get('campus', event.campus),
                 'Weeks':            orig.get('weeks', ''),
@@ -802,6 +803,7 @@ class TimetableCSP:
                 'Module Code':   orig.get('module', ''),
                 'Event Type':    orig.get('event_type', ''),
                 'Event Size':    event.event_size,
+                'Effective Size': event.effective_size,
                 'Duration (min)': orig.get('duration', event.duration_minutes),
                 'Campus':        orig.get('campus', event.campus),
                 'Weeks':         orig.get('weeks', ''),
